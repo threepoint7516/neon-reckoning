@@ -1,0 +1,17 @@
+# Render Blueprint for the authoritative game server (persistent WebSockets).
+# The static client goes to Netlify; see README.
+services:
+  - type: web
+    name: neon-reckoning-server
+    runtime: node
+    plan: starter
+    buildCommand: npm ci --include=dev && npm run build:server
+    startCommand: npm run start:server
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      - key: ALLOWED_ORIGINS
+        sync: false # set to your Netlify URL, e.g. https://neon-reckoning.netlify.app

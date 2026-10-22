@@ -1,0 +1,31 @@
+{
+  "name": "neon-reckoning",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "NEON RECKONING \u00e2\u20ac\u201d a free-to-play cyberpunk browser arena shooter with an authoritative multiplayer server.",
+  "workspaces": [
+    "shared",
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "npm run dev:server & npm run dev:client",
+    "dev:client": "npm run dev -w client",
+    "dev:server": "npm run dev -w server",
+    "build": "npm run build -w client && npm run build -w server",
+    "build:client": "npm run build -w client",
+    "build:server": "npm run build -w server",
+    "start:server": "npm run start -w server",
+    "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w client",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

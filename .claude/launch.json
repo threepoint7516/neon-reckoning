@@ -1,0 +1,9 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "client", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "-w", "client"], "port": 5173 },
+    { "name": "server", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev", "-w", "server"], "port": 2567 },
+    { "name": "prod-server", "runtimeExecutable": "node", "runtimeArgs": ["server/dist/index.js"], "port": 2567 },
+    { "name": "preview", "runtimeExecutable": "npm", "runtimeArgs": ["run", "preview", "-w", "client", "--", "--port", "4173"], "port": 4173 }
+  ]
+}
