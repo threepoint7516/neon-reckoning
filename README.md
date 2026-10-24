@@ -143,7 +143,7 @@ Server environment variables (server-only, never exposed to browsers; see `serve
 | `AI_FILL_WAIT_ALONE` | Same, when no other player is online and free to join (default 2) |
 | `NODE_ENV` | `production` |
 
-**Render:** the included `render.yaml` is a Blueprint. Create a new Blueprint from your repo and set `ALLOWED_ORIGINS`. Free instances sleep when idle, so the first connection can take ~30–60 s; the client shows "waking up" errors honestly and offers Practice.
+**Render:** the included `render.yaml` is a Blueprint. Create a new Blueprint from your repo and set `ALLOWED_ORIGINS`. It uses the **free** plan, whose instances sleep when idle, so the first connection can take ~30–60 s; the client shows "waking up" errors honestly and offers Practice. Change `plan: free` to `plan: starter` (paid) for an always-on server.
 **Fly.io / Docker hosts:** build with `docker build -f server/Dockerfile -t neon-reckoning-server .` from the repo root.
 **VPS:** run `npm ci && npm run build:server && NODE_ENV=production ALLOWED_ORIGINS=… node server/dist/index.js` behind a TLS proxy (Caddy/nginx) so browsers can use `wss://`.
 

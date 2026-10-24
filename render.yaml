@@ -4,7 +4,7 @@ services:
   - type: web
     name: neon-reckoning-server
     runtime: node
-    plan: starter
+    plan: free # sleeps when idle (first connection ~30–60 s); use "starter" for always-on
     buildCommand: npm ci --include=dev && npm run build:server
     startCommand: npm run start:server
     healthCheckPath: /health
