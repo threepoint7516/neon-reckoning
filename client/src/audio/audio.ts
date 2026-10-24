@@ -3,6 +3,27 @@ import { settingsStore } from "../state/settings";
 
 type Vec = { x: number; y: number; z: number };
 
+/** Kinds of positional (other players' / world) sounds, each with its own voice pool. */
+export type VoiceKind = "gun" | "step" | "impact" | "fx";
+/** Simultaneous voices per kind; when full, a louder/closer sound replaces the weakest. */
+export const VOICE_LIMIT: Record<VoiceKind, number> = { gun: 14, step: 8, impact: 6, fx: 10 };
+/** Beyond this distance (m) a sound is inaudible and isn't played at all. */
+const HEARING: Record<VoiceKind, number> = { gun: 150, step: 35, impact: 40, fx: 130 };
+/** Closest voices get HRTF (precise but CPU-heavy) panning; the rest use cheap equal-power panning. */
+const HRTF_RANGE = 25;
+const HRTF_MAX = 8;
+
+interface Voice {
+  kind: VoiceKind;
+  /** Audio-clock time after which the voice is silent and can be torn down. */
+  end: number;
+  prio: number;
+  hrtf: boolean;
+  released: boolean;
+  gain: GainNode;
+  nodes: AudioNode[];
+}
+
 /**
  * Fully synthesized audio (Web Audio API) — no sample files, no licensing
  * questions. If audio is unavailable the game simply runs silently.
@@ -21,7 +42,8 @@ export class AudioEngine {
   private musicStep = 0;
   private nextNoteTime = 0;
   private musicMode: "menu" | "match" | "off" = "off";
-  private voices = 0;
+  private live: Voice[] = [];
+  private listenerPos: Vec = { x: 0, y: 0, z: 0 };
   private reverb: ConvolverNode | null = null;
 
   /** Must be called from a user gesture (autoplay policy). */
@@ -42,9 +64,14 @@ export class AudioEngine {
     this.muffle = c.createBiquadFilter();
     this.muffle.type = "lowpass";
     this.muffle.frequency.value = 20000;
+    // Glue + safety limiter: fast attack, quick release so a nearby explosion
+    // doesn't duck gunfire for long.
     const comp = c.createDynamicsCompressor();
-    comp.threshold.value = -14;
-    comp.ratio.value = 4;
+    comp.threshold.value = -12;
+    comp.knee.value = 8;
+    comp.ratio.value = 6;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.12;
     this.master.connect(this.muffle).connect(comp).connect(c.destination);
     this.music = c.createGain();
     this.sfx = c.createGain();
@@ -69,6 +96,20 @@ export class AudioEngine {
     this.reverb.connect(rv).connect(this.sfx);
     this.applyVolumes();
     settingsStore.subscribe(() => this.applyVolumes());
+    // Browsers may suspend audio mid-session (device change, tab in background,
+    // power saving). Resume on the next key/click or when the tab is shown again.
+    const resume = () => {
+      if (this.ctx && this.ctx.state !== "running" && this.ctx.state !== "closed") void this.ctx.resume().catch(() => {});
+    };
+    for (const ev of ["pointerdown", "keydown"] as const) document.addEventListener(ev, resume, { capture: true });
+    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && resume());
+    // Tear down finished voices even when nothing new is playing.
+    window.setInterval(() => this.ctx && this.reap(this.ctx.currentTime), 1000);
+  }
+
+  /** Positional voices currently held (for diagnostics and tests). */
+  activeVoices(kind?: VoiceKind): number {
+    return this.live.filter((v) => !v.released && (!kind || v.kind === kind)).length;
   }
 
   applyVolumes(): void {
@@ -85,6 +126,7 @@ export class AudioEngine {
   setListener(pos: Vec, yaw: number): void {
     const c = this.ctx;
     if (!c) return;
+    this.listenerPos = { x: pos.x, y: pos.y, z: pos.z };
     const l = c.listener;
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
@@ -118,10 +160,36 @@ export class AudioEngine {
   // Building blocks
   // -------------------------------------------------------------------------
 
-  private out(bus: GainNode, pos?: Vec, refDist = 6): AudioNode {
-    if (!pos || !this.ctx) return bus;
-    const p = this.ctx.createPanner();
-    p.panningModel = "HRTF";
+  /**
+   * Output for one sound. Local sounds (no position: your own gun, steps, UI)
+   * always play. Positional sounds compete for a few voices per kind: the
+   * closest/loudest win, inaudible ones are skipped, and each voice is torn
+   * down when it ends. Returns null when the sound shouldn't play.
+   */
+  private voice(kind: VoiceKind, pos: Vec | undefined, refDist: number, dur: number, loud = 1): AudioNode | null {
+    const c = this.ctx!;
+    if (!pos) return this.sfx;
+    const now = c.currentTime;
+    this.reap(now);
+    const L = this.listenerPos;
+    const d = Math.hypot(pos.x - L.x, pos.y - L.y, pos.z - L.z);
+    if (d > HEARING[kind]) return null;
+    const prio = (loud * refDist) / Math.max(refDist, d);
+    const same = this.live.filter((v) => v.kind === kind && !v.released);
+    if (same.length >= VOICE_LIMIT[kind]) {
+      let weakest = same[0]!;
+      for (const v of same) if (v.prio < weakest.prio || (v.prio === weakest.prio && v.end < weakest.end)) weakest = v;
+      if (weakest.prio >= prio) return null;
+      this.release(weakest, now);
+    }
+    const g = c.createGain();
+    // Air absorption: distant sounds lose their highs (and read as further away).
+    const air = c.createBiquadFilter();
+    air.type = "lowpass";
+    air.frequency.value = Math.max(1200, Math.min(18000, 18000 * Math.exp(-d / 45)));
+    const p = c.createPanner();
+    const hrtf = d < HRTF_RANGE && this.live.filter((v) => v.hrtf && !v.released).length < HRTF_MAX;
+    p.panningModel = hrtf ? "HRTF" : "equalpower";
     p.distanceModel = "inverse";
     p.refDistance = refDist;
     p.maxDistance = 300;
@@ -131,15 +199,26 @@ export class AudioEngine {
       p.positionY.value = pos.y;
       p.positionZ.value = pos.z;
     } else p.setPosition(pos.x, pos.y, pos.z);
-    p.connect(bus);
-    return p;
+    g.connect(air).connect(p).connect(this.sfx);
+    this.live.push({ kind, end: now + dur + 0.1, prio, hrtf, released: false, gain: g, nodes: [g, air, p] });
+    return g;
   }
 
-  private budget(): boolean {
-    if (this.voices > 48) return false;
-    this.voices++;
-    setTimeout(() => this.voices--, 600);
-    return true;
+  /** Fades a voice out quickly so a more important sound can take its slot. */
+  private release(v: Voice, now: number): void {
+    v.released = true;
+    v.gain.gain.setTargetAtTime(0, now, 0.012);
+    v.end = Math.min(v.end, now + 0.08);
+  }
+
+  /** Disconnects finished voices so their panners stop costing CPU. */
+  private reap(now: number): void {
+    if (!this.live.some((v) => v.end <= now)) return;
+    this.live = this.live.filter((v) => {
+      if (v.end > now) return true;
+      for (const n of v.nodes) n.disconnect();
+      return false;
+    });
   }
 
   private noiseBurst(dest: AudioNode, o: { dur: number; gain: number; type: BiquadFilterType; freq: number; q?: number; sweepTo?: number; delay?: number; attack?: number }): void {
@@ -187,21 +266,25 @@ export class AudioEngine {
   // -------------------------------------------------------------------------
 
   gunshot(def: WeaponDef, pos?: Vec, local = false): void {
-    if (!this.ctx || !this.budget()) return;
+    if (!this.ctx) return;
     const s = def.sound;
-    const dest = this.out(this.sfx, pos, 10);
+    const dest = this.voice("gun", pos, 10, 0.7, s.kind === "heavy" ? 1.3 : 1);
+    if (!dest) return;
     const k = local ? 1 : 0.85;
+    // Tiny per-shot pitch variation keeps automatic fire from sounding robotic.
+    const v = 0.97 + Math.random() * 0.06;
     if (s.kind === "energy") {
-      this.osc(dest, { type: "sawtooth", f0: 1800 * s.pitch, f1: 160 * s.pitch, dur: 0.12 + s.tail * 0.18, gain: 0.22 * k });
-      this.osc(dest, { type: "square", f0: 900 * s.pitch, f1: 90, dur: 0.08 + s.body * 0.1, gain: 0.12 * k });
+      this.osc(dest, { type: "sawtooth", f0: 1800 * s.pitch * v, f1: 160 * s.pitch * v, dur: 0.12 + s.tail * 0.18, gain: 0.22 * k });
+      this.osc(dest, { type: "square", f0: 900 * s.pitch * v, f1: 90, dur: 0.08 + s.body * 0.1, gain: 0.12 * k });
       this.noiseBurst(dest, { dur: 0.06 + s.crack * 0.06, gain: 0.25 * k, type: "highpass", freq: 3000 });
     } else {
       this.noiseBurst(dest, { dur: 0.05 + s.crack * 0.05, gain: 0.6 * s.crack * k, type: "highpass", freq: 2200 * s.pitch });
       this.noiseBurst(dest, { dur: 0.12 + s.body * 0.15, gain: 0.7 * s.body * k, type: "lowpass", freq: 2400 * s.pitch, sweepTo: 300 });
-      this.osc(dest, { type: "sine", f0: 160 * s.pitch, f1: 38, dur: 0.12 + s.body * 0.1, gain: 0.7 * s.body * k });
+      this.osc(dest, { type: "sine", f0: 160 * s.pitch * v, f1: 38, dur: 0.12 + s.body * 0.1, gain: 0.7 * s.body * k });
       if (s.kind === "heavy") this.osc(dest, { type: "triangle", f0: 90, f1: 30, dur: 0.3, gain: 0.5 * k });
     }
-    if (this.reverb && s.tail > 0.3) this.noiseBurst(this.reverb, { dur: 0.25 * s.tail + 0.1, gain: 0.25 * s.tail * k, type: "lowpass", freq: 1400 });
+    // Room tail only for your own shots (distant ones already sit back in the mix).
+    if (this.reverb && local && s.tail > 0.3) this.noiseBurst(this.reverb, { dur: 0.25 * s.tail + 0.1, gain: 0.25 * s.tail, type: "lowpass", freq: 1400 });
     if (local) {
       // Mechanical action click.
       this.noiseBurst(this.sfx, { dur: 0.02, gain: 0.15, type: "bandpass", freq: 4200, q: 6, delay: 0.035 });
@@ -210,16 +293,18 @@ export class AudioEngine {
 
   explosion(pos: Vec, size = 1): void {
     if (!this.ctx) return;
-    const dest = this.out(this.sfx, pos, 14);
-    this.noiseBurst(dest, { dur: 1.4 * size, gain: 1.0, type: "lowpass", freq: 2200, sweepTo: 120, attack: 0.005 });
-    this.osc(dest, { type: "sine", f0: 110, f1: 25, dur: 0.9 * size, gain: 1.0 });
+    const dest = this.voice("fx", pos, 14, 1.5 * size, 3);
+    if (!dest) return;
+    this.noiseBurst(dest, { dur: 1.4 * size, gain: 0.8, type: "lowpass", freq: 2200, sweepTo: 120, attack: 0.005 });
+    this.osc(dest, { type: "sine", f0: 110, f1: 25, dur: 0.9 * size, gain: 0.85 });
     this.noiseBurst(dest, { dur: 0.15, gain: 0.5, type: "highpass", freq: 1500 });
-    if (this.reverb) this.noiseBurst(this.reverb, { dur: 1.2, gain: 0.5, type: "lowpass", freq: 900 });
+    if (this.reverb) this.noiseBurst(this.reverb, { dur: 1.2, gain: 0.4, type: "lowpass", freq: 900 });
   }
 
   pop(pos: Vec, kind: "smoke" | "flash" | "emp"): void {
     if (!this.ctx) return;
-    const dest = this.out(this.sfx, pos, 8);
+    const dest = this.voice("fx", pos, 8, 1.7, 2);
+    if (!dest) return;
     if (kind === "smoke") this.noiseBurst(dest, { dur: 1.6, gain: 0.35, type: "bandpass", freq: 900, sweepTo: 300, attack: 0.05 });
     else if (kind === "flash") {
       this.noiseBurst(dest, { dur: 0.5, gain: 0.9, type: "highpass", freq: 2500 });
@@ -232,8 +317,9 @@ export class AudioEngine {
   }
 
   footstep(pos?: Vec, loud = 1, metal = false): void {
-    if (!this.ctx || !this.budget()) return;
-    const dest = this.out(this.sfx, pos, 3);
+    if (!this.ctx) return;
+    const dest = this.voice("step", pos, 3, 0.15, loud);
+    if (!dest) return;
     this.noiseBurst(dest, { dur: 0.07, gain: 0.18 * loud, type: "bandpass", freq: metal ? 2600 : 900 + Math.random() * 300, q: metal ? 4 : 1.2 });
     this.osc(dest, { type: "sine", f0: 90, f1: 50, dur: 0.06, gain: 0.12 * loud });
   }
@@ -274,17 +360,20 @@ export class AudioEngine {
 
   throwSound(pos?: Vec): void {
     if (!this.ctx) return;
-    this.noiseBurst(this.out(this.sfx, pos, 4), { dur: 0.2, gain: 0.15, type: "bandpass", freq: 700, sweepTo: 1600, attack: 0.04 });
+    const dest = this.voice("fx", pos, 4, 0.25);
+    if (dest) this.noiseBurst(dest, { dur: 0.2, gain: 0.15, type: "bandpass", freq: 700, sweepTo: 1600, attack: 0.04 });
   }
 
   bounce(pos: Vec): void {
-    if (!this.ctx || !this.budget()) return;
-    this.noiseBurst(this.out(this.sfx, pos, 4), { dur: 0.04, gain: 0.25, type: "bandpass", freq: 2600, q: 4 });
+    if (!this.ctx) return;
+    const dest = this.voice("impact", pos, 4, 0.08);
+    if (dest) this.noiseBurst(dest, { dur: 0.04, gain: 0.25, type: "bandpass", freq: 2600, q: 4 });
   }
 
   impact(pos: Vec): void {
-    if (!this.ctx || !this.budget()) return;
-    this.noiseBurst(this.out(this.sfx, pos, 3), { dur: 0.05, gain: 0.2, type: "bandpass", freq: 2000 + Math.random() * 2000, q: 3 });
+    if (!this.ctx) return;
+    const dest = this.voice("impact", pos, 3, 0.1);
+    if (dest) this.noiseBurst(dest, { dur: 0.05, gain: 0.2, type: "bandpass", freq: 2000 + Math.random() * 2000, q: 3 });
   }
 
   hitmarker(head: boolean, kill: boolean, shieldBreak = false): void {
@@ -321,7 +410,8 @@ export class AudioEngine {
   /** Loot crate cracking open. */
   crate(pos: Vec): void {
     if (!this.ctx) return;
-    const dest = this.out(this.sfx, pos, 6);
+    const dest = this.voice("fx", pos, 6, 0.4);
+    if (!dest) return;
     this.noiseBurst(dest, { dur: 0.18, gain: 0.5, type: "bandpass", freq: 900, q: 1.5 });
     this.noiseBurst(dest, { dur: 0.06, gain: 0.4, type: "highpass", freq: 3000, delay: 0.02 });
     [880, 1175, 1568].forEach((f, i) => this.osc(dest, { type: "triangle", f0: f, dur: 0.18, gain: 0.08, delay: 0.05 + i * 0.05 }));
@@ -395,8 +485,9 @@ export class AudioEngine {
   }
 
   beep(pos: Vec): void {
-    if (!this.ctx || !this.budget()) return;
-    this.osc(this.out(this.sfx, pos, 3), { type: "square", f0: 1900, dur: 0.06, gain: 0.12 });
+    if (!this.ctx) return;
+    const dest = this.voice("fx", pos, 3, 0.12);
+    if (dest) this.osc(dest, { type: "square", f0: 1900, dur: 0.06, gain: 0.12 });
   }
 
   // -------------------------------------------------------------------------
