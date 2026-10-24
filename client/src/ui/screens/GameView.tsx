@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import { portal } from "../../platform/portal";
 import { MODE_INFO, districtMeta } from "@neon/shared";
 import type { DistrictId } from "@neon/shared";
 import { Game } from "../../game/Game";
@@ -41,6 +42,10 @@ export function GameView() {
   const [game, setGame] = useState<Game | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  // Portals: the pause menu is a break in play.
+  useEffect(() => {
+    if (game && !game.ended) portal.gameplay(!paused);
+  }, [game, paused]);
   const [locked, setLocked] = useState(false);
   const [disconnected, setDisconnected] = useState<string | null>(null);
   const [, force] = useReducer((x: number) => x + 1, 0);

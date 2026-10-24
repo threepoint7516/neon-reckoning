@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:crazygames": "vite build --mode crazygames --base ./ --outDir dist-crazygames",
+    "build:poki": "vite build --mode poki --base ./ --outDir dist-poki",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json"
   },

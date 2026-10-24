@@ -10,8 +10,9 @@ export const config = {
   host: process.env.HOST ?? "0.0.0.0",
   /**
    * Comma-separated list of allowed browser origins for WebSocket upgrades,
-   * e.g. "https://neon-reckoning.netlify.app". Empty = allow localhost only.
-   * Use "*" to allow any origin (not recommended in production).
+   * e.g. "https://neon-reckoning.netlify.app". A "*" inside a pattern matches
+   * any subdomain, e.g. "https://*.crazygames.com" for a game portal.
+   * Empty = allow localhost only. A bare "*" allows any origin (not recommended).
    */
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -28,11 +29,19 @@ export const config = {
 
 const LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
 
+/** Exact match, or a "*" wildcard standing for one or more subdomain labels. */
+export function originMatches(pattern: string, origin: string): boolean {
+  if (!pattern.includes("*")) return pattern === origin;
+  const esc = (t: string) => t.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  const label = "[a-z0-9-]+(?:\\.[a-z0-9-]+)*";
+  return new RegExp(`^${pattern.split("*").map(esc).join(label)}$`, "i").test(origin);
+}
+
 export function originAllowed(origin: string | undefined): boolean {
   if (config.allowedOrigins.includes("*")) return true;
   if (!origin) return config.allowedOrigins.length === 0; // non-browser clients only in dev
   if (config.allowedOrigins.length === 0) return LOCAL.test(origin);
-  return config.allowedOrigins.includes(origin) || LOCAL.test(origin) && process.env.NODE_ENV !== "production";
+  return config.allowedOrigins.some((p) => originMatches(p, origin)) || (LOCAL.test(origin) && process.env.NODE_ENV !== "production");
 }
 
 export function log(level: "info" | "warn" | "error", ...args: unknown[]): void {

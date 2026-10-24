@@ -833,3 +833,18 @@ table.sb th.num {
   color: #c2410c;
   letter-spacing: 0.1em;
 }
+
+/* ---------- Support link & portal ad break ---------- */
+.btn.support {
+  text-decoration: none;
+  border-color: #ff4f9a;
+  color: #c2185b;
+}
+.btn.support .sub {
+  color: inherit;
+  opacity: 0.75;
+}
+.overlay.ad-break {
+  z-index: 50;
+  background: rgba(11, 26, 69, 0.75);
+}

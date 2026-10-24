@@ -43,6 +43,8 @@ export class AudioEngine {
   private nextNoteTime = 0;
   private musicMode: "menu" | "match" | "off" = "off";
   private live: Voice[] = [];
+  /** Muted while a portal ad plays. */
+  private adMuted = false;
   private listenerPos: Vec = { x: 0, y: 0, z: 0 };
   private reverb: ConvolverNode | null = null;
 
@@ -112,11 +114,17 @@ export class AudioEngine {
     return this.live.filter((v) => !v.released && (!kind || v.kind === kind)).length;
   }
 
+  /** Silences everything while a portal ad plays. */
+  setAdMute(on: boolean): void {
+    this.adMuted = on;
+    this.applyVolumes();
+  }
+
   applyVolumes(): void {
     if (!this.ctx) return;
     const s = settingsStore.get();
     const t = this.ctx.currentTime;
-    this.master.gain.setTargetAtTime(s.masterVol, t, 0.05);
+    this.master.gain.setTargetAtTime(this.adMuted ? 0 : s.masterVol, t, 0.05);
     this.music.gain.setTargetAtTime(s.musicVol * 0.5, t, 0.05);
     this.sfx.gain.setTargetAtTime(s.sfxVol, t, 0.05);
     this.ambient.gain.setTargetAtTime(s.ambientVol * 0.6, t, 0.05);

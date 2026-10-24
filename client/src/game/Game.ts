@@ -19,6 +19,7 @@ import { settingsStore } from "../state/settings";
 import type { Settings } from "../state/settings";
 import { onChallengeComplete, trackEvent } from "../state/session";
 import { progress, xpToNext } from "../state/progress";
+import { portal } from "../platform/portal";
 import { Input } from "./input";
 import { buildWorld, makeEnvMap } from "./render/world";
 import { DayNight, NIGHT_TOD } from "./render/sky";
@@ -219,6 +220,7 @@ export class Game {
     this.unsub.push(conn.onMessage((m) => this.onMessage(m)));
     this.unsub.push(settingsStore.subscribe(() => this.applySettings()));
     this.hud.online = !this.offline;
+    portal.gameplay(true);
     // Session progression: level-ups and challenges celebrate mid-match.
     progress.beginMatch();
     this.viewmodel.setCamo(progress.camo());
@@ -291,6 +293,7 @@ export class Game {
   }
 
   dispose(): void {
+    portal.gameplay(false);
     this.disposed = true;
     cancelAnimationFrame(this.raf);
     window.removeEventListener("resize", this.resize);
@@ -400,6 +403,7 @@ export class Game {
         }
         break;
       case "match_end":
+        portal.gameplay(false);
         this.ended = true;
         this.results = m.results;
         this.input.enabled = false;

@@ -160,14 +160,45 @@ Browsers on an HTTPS site require **`wss://`**, so the server must be reachable 
 
 Without `VITE_GAME_SERVER_URL` the build is still fully usable: Practice and Training work, and Play explains that no multiplayer server is configured. Production builds never fall back to `localhost`.
 
+### 3. Earning from the game (optional)
+
+Your own site stays **ad-free and tracker-free**. Money comes from two optional, separate things:
+
+**a) A "Support the game" link on your own site.**
+1. Create a free page on Ko-fi or Buy Me a Coffee.
+2. In Netlify, go to **Site configuration → Environment variables** and add `VITE_SUPPORT_URL` = your page's `https://` address.
+3. Redeploy: **Deploys → Trigger deploy → Deploy site**.
+
+What players see and what's sent:
+- A "♥ Support the game" button on the main menu and the results screen, and a short note on the Privacy page.
+- It's a plain link: nothing is sent anywhere unless the player clicks it.
+- It never appears in the portal builds, because the portals don't allow outside links.
+
+**b) Game portals (CrazyGames, Poki) that show their own ads and share the money with you.**
+
+There's a separate build for each portal. It loads only that portal's toolkit (SDK) and tells the portal when loading finishes and when a match starts and stops. It requests an ad only at a natural break: when the player leaves the results screen. The game is muted while an ad plays. If an ad is skipped, blocked or fails, the game carries on, and a timeout makes sure it can never freeze.
+
+1. **Point the build at your server.** Create a file `client/.env.local` containing the line `VITE_GAME_SERVER_URL=wss://your-game-server.onrender.com`. The file isn't uploaded to GitHub.
+2. **Build:**
+   - CrazyGames: `npm run build:crazygames` → `client/dist-crazygames/`
+   - Poki: `npm run build:poki` → `client/dist-poki/`
+3. **Zip** the *contents* of that folder, so that `index.html` sits at the top of the zip.
+4. **Submit:**
+   - CrazyGames: upload the zip in the CrazyGames developer portal (developer.crazygames.com) and test it with their preview and QA tools before submitting.
+   - Poki: Poki is curated, so apply through Poki for Developers. They'll have you upload the zip to their Inspector to test.
+5. **Allow the portal on your game server.** On Render, add the portal's domain to `ALLOWED_ORIGINS` with a wildcard. Separate entries with commas, for example `https://your-site.netlify.app,https://*.crazygames.com`.
+   - If online play doesn't connect from the portal, open your server's **Logs** on Render. Rejected connections are logged as `rejected upgrade from disallowed origin "https://…"`. Add that address, or a wildcard covering it.
+
+The portal builds' Privacy page says plainly that the portal shows ads and may use cookies under its own privacy policy.
+
 ---
 
 ## Privacy
 
-- No accounts, emails, passwords, analytics, ad trackers, cookies, fingerprinting, chat or database.
+- No accounts, emails, passwords, analytics, ad trackers, cookies, fingerprinting, chat or database. This applies to your own site. In the optional portal builds, the portal (CrazyGames/Poki) shows ads and may use cookies under its own policy, and the in-game Privacy page says so.
 - **Callsign:** random (e.g. `NeonRaven742`), rerollable or editable, held only in the tab's memory. It's sent to the game server only while you play online so others can see it.
 - **Server memory:** names, parties, team assignments, positions and scores exist in RAM only while the party or room exists. Rooms are freed when everyone leaves, 60 s after a match ends, or after 40 minutes at most. Disconnected slots are held for 30 s for reconnection.
-- **Server logs** contain only operational events (start, room opened/closed with mode and counts, errors). They never contain names, IPs or message contents.
+- **Server logs** contain only operational events (start, room opened/closed with mode and counts, the website address of rejected connections, errors). They never contain names, IPs or message contents.
 - **Browser storage:** nothing by default. There are two separate opt-ins, both in *Settings → Storage* and both off by default:
   - *Remember these settings* saves only control/graphics/audio/accessibility preferences in `localStorage` (`neon-reckoning:prefs`).
   - *Remember my level, XP and weapon finish* saves exactly two values, `{ v: 1, xp, camo }`, in `localStorage` (`neon-reckoning:progress`). Your level is recomputed from total XP on load, and malformed or out-of-range data is ignored. Turning the option off deletes the key.
@@ -241,11 +272,11 @@ Ladders: hold forward to climb, jump to kick off.
 
 ## Test results (actually run)
 
-Automated (`npm test`): **87 tests passing.**
+Automated (`npm test`): **94 tests passing.**
 
 - `shared/test` (68): death feedback (kill events carry the killer's health and distance; the killer is marked for the victim's team after respawn), battle royale (in a 23-bot match, 95 s in, at least 10 bots are alive, over 40% moved in the last 15 s, almost none are out of ammo, and route searches stay throttled; early eliminations redeploy once and later ones are final; supply drops land inside the next safe zone and spill a power weapon, armor, plate and ammo; bots only target loot they can use and go for ammo or a gun when dry), stairways and jump pads on the real map (no solid geometry, ladder, jump pad, crate or barrel in any of the 450 stair flights' walk space; every flight can be walked and sprinted up and down without snagging or bobbing, and jumped from mid-flight; every outdoor rooftop staircase lets you walk onto the roof; all 64 jump pads launch to full height without hitting anything and land without fall damage), Gun Game (a 10-bot Gun Game always arms each player with exactly their ladder weapon and ends on a final-weapon kill; arenas have no weapon or power pickups), slide-hop (landing with crouch held starts a second slide and keeps clearly more speed than a plain landing), the shared medal-score table, match sizes (online team modes 6v6, FFA 12, BR 24 for every squad size; a full 8v8 bot match fights and runs under 5 ms per tick), play features (double jump; jump pads launch and cancel fall damage; **every rooftop jump pad on the real map lands its rider on the roof without fall damage**; shooting a loot crate breaks it and drops a pickup), payload (every district's track is deterministic and clear of geometry; the cart advances only with uncontested escorts, extends the clock at checkpoints and rolls back to the last one; bot attackers deliver it and win; bot defenders run the clock out and win; a full bot-filled 4v4 reaches an end condition), movement (gravity, walk/sprint speeds, no wall tunnelling at 400 m/s, step-up limits, jump height, slide, bounds, determinism), weapons (fire rate, semi/burst/pellets, reload, empty mag, swap delay, falloff, power-weapon ammo, distinct handling), map (determinism, 8 districts, every spawn free of geometry, objectives/pickups present, BR loot), match (bot-filled TDM runs to its score limit; FFA/DOM/BR run to completion; server-side hitscan applies armor-first damage; input flooding can't speed-hack; snapshots serialize under 20 KB), protocol validation and name sanitization.
-- `client/test` (9): audio voices against a fake Web Audio graph (your own gunshots keep playing while 900 other sounds compete; other players' gunfire is capped per kind and closer shots take over from distant ones; inaudible sounds are skipped; finished voices are disconnected; a suspended context resumes on the next key press), opt-in progress saving (nothing stored by default; only total XP and camo saved when opted in, and the level is restored from them; opting out deletes the saved copy; malformed or out-of-range data is ignored).
-- `server/test` (10): health endpoint, an online Gun Game queue that starts as a full 12-player solo match on the first ladder weapon, name sanitization, invalid room codes, party-size enforcement (solo can't queue a BR Squad without Fill), a solo TDM queue that starts within seconds as a full 6v6 with 11 labelled bots, a second player who drops into that running match in place of a bot, and a bot that takes over their slot when they leave, a two-client private match with synchronized movement and server acks, reconnect with token, labelled AI fill after the wait, disconnection of clients spamming invalid frames, and rejection of a disallowed origin.
+- `client/test` (14): portal integration with fake SDKs (the regular build has no portal; loading and gameplay are reported once each; the game is muted only while an ad plays; skipped or crashing ads and a blocked SDK never hang the game; the real CrazyGames and Poki call sequences), audio voices against a fake Web Audio graph (your own gunshots keep playing while 900 other sounds compete; other players' gunfire is capped per kind and closer shots take over from distant ones; inaudible sounds are skipped; finished voices are disconnected; a suspended context resumes on the next key press), opt-in progress saving (nothing stored by default; only total XP and camo saved when opted in, and the level is restored from them; opting out deletes the saved copy; malformed or out-of-range data is ignored).
+- `server/test` (12): allowed-origin matching (exact addresses and `https://*.domain` wildcards; look-alike domains, other schemes and bare domains are rejected), health endpoint, an online Gun Game queue that starts as a full 12-player solo match on the first ladder weapon, name sanitization, invalid room codes, party-size enforcement (solo can't queue a BR Squad without Fill), a solo TDM queue that starts within seconds as a full 6v6 with 11 labelled bots, a second player who drops into that running match in place of a bot, and a bot that takes over their slot when they leave, a two-client private match with synchronized movement and server acks, reconnect with token, labelled AI fill after the wait, disconnection of clients spamming invalid frames, and rejection of a disallowed origin.
 
 Manual browser testing (built-in Chromium pane, Intel HD 530 integrated GPU):
 

@@ -39,7 +39,9 @@ const wss = new WebSocketServer({
   perMessageDeflate: false,
   verifyClient: (info, cb) => {
     if (!originAllowed(info.origin)) {
-      log("warn", "rejected upgrade from disallowed origin");
+      // The origin is a website address (not personal data); logging it shows
+      // which address to add to ALLOWED_ORIGINS, e.g. when a portal embeds the game.
+      log("warn", `rejected upgrade from disallowed origin ${JSON.stringify(info.origin ?? "")}`);
       cb(false, 403, "Origin not allowed");
       return;
     }

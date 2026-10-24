@@ -11,6 +11,9 @@ import { serverUrl } from "../../net/connection";
 import { getTextures } from "../../game/render/textures";
 import { lastPractice, quickPlay, startPractice } from "./Practice";
 import { LevelPanel } from "../components/LevelPanel";
+import { SupportLink } from "../components/SupportLink";
+import { PORTAL, PORTAL_NAME, portal } from "../../platform/portal";
+import { supportUrl } from "../components/SupportLink";
 
 function Logo({ small = false }: { small?: boolean }) {
   const s = useSettings();
@@ -47,6 +50,7 @@ export function BootScreen() {
         setProgress(1);
         setStage("Ready");
         setReady(true);
+        portal.loadingDone();
         return;
       }
       const [label, fn] = steps[i]!;
@@ -208,6 +212,9 @@ export function MainMenu() {
             {btn("Privacy", "What we keep (almost nothing)", () => go("privacy"))}
             {btn("Credits", "", () => go("credits"))}
           </nav>
+          <div style={{ marginTop: 12 }}>
+            <SupportLink big />
+          </div>
           {touchOnly() && (
             <div className="panel" style={{ marginTop: 18, maxWidth: 420, borderColor: "var(--magenta)" }}>
               <h3 style={{ color: "var(--magenta)" }}>Keyboard &amp; mouse needed</h3>
@@ -406,7 +413,11 @@ export function PrivacyScreen() {
           <h3>What the game never does</h3>
           <ul className="small" style={{ lineHeight: 1.7 }}>
             <li>No accounts, logins, emails, passwords or social sign-in.</li>
-            <li>No analytics SDKs, advertising trackers, fingerprinting or cookies.</li>
+            <li>
+              {PORTAL === "none"
+                ? "No analytics SDKs, advertising trackers, fingerprinting or cookies."
+                : "The game's own code adds no analytics, trackers, fingerprinting or cookies (see the note about this website's ads)."}
+            </li>
             <li>No database. Player identities and match histories are never persisted.</li>
             <li>No chat, so there is no chat history to keep.</li>
             <li>No third-party fonts, CDNs or embeds — everything is served from the game's own origin.</li>
@@ -434,11 +445,29 @@ export function PrivacyScreen() {
             </li>
           </ul>
         </div>
+        {PORTAL !== "none" && (
+          <div className="panel" style={{ borderColor: "var(--yellow)" }}>
+            <h3>Ads on {PORTAL_NAME[PORTAL]}</h3>
+            <p className="small" style={{ lineHeight: 1.7 }}>
+              You're playing the copy of NEON RECKONING hosted on {PORTAL_NAME[PORTAL]}. {PORTAL_NAME[PORTAL]} shows ads between matches (never during a fight) and,
+              together with its ad partners, may use cookies and similar technology under its own privacy policy and consent choices. The game itself still stores
+              nothing about you.
+            </p>
+          </div>
+        )}
+        {supportUrl() && (
+          <div className="panel">
+            <h3>"Support the game" link</h3>
+            <p className="small" style={{ lineHeight: 1.7 }}>
+              It's a plain link to {new URL(supportUrl()!).hostname}. Nothing is sent anywhere unless you click it; that site's own privacy policy applies there.
+            </p>
+          </div>
+        )}
         <div className="panel">
           <h3>What we can't promise</h3>
           <p className="small" style={{ lineHeight: 1.7 }}>
             Like every website, the hosting providers (the static site host and the game server host) may keep standard operational logs such as IP addresses and
-            request times. That is outside the game's control. The game server itself only logs operational events (startup, rooms opening/closing, errors) and never
+            request times. That is outside the game's control. The game server itself only logs operational events (startup, rooms opening/closing, rejected website addresses, errors) and never
             logs names, IP addresses or message contents. Practice and Training never contact any server at all.
           </p>
         </div>

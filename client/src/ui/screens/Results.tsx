@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MODE_INFO, WEAPONS, isSoloMode } from "@neon/shared";
 import { go, store, useStore } from "../../state/store";
 import { challenges, recordResults } from "../../state/session";
@@ -6,6 +6,8 @@ import { MEDAL_NAMES } from "../../game/hud";
 import { online } from "../../net/online";
 import { startPractice } from "./Practice";
 import { titleFor, useProgress, xpToNext } from "../../state/progress";
+import { portal } from "../../platform/portal";
+import { SupportLink } from "../components/SupportLink";
 import { audio } from "../../audio/audio";
 
 const recorded = new WeakMap<object, ReturnType<typeof recordResults>>();
@@ -48,6 +50,15 @@ export function ResultsScreen() {
       go("play");
     }
   };
+  // Portal builds: leaving the results screen is a natural ad break (no-op on your own site).
+  const [adPending, setAdPending] = useState(false);
+  const afterBreak = (fn: () => void) => async () => {
+    if (adPending) return;
+    setAdPending(true);
+    await portal.adBreak();
+    setAdPending(false);
+    fn();
+  };
   const myId = useStore((s) => s.myId);
   const party = useStore((s) => s.party);
   const isLeader = !party || party.members.find((m) => m.leader)?.id === myId;
@@ -62,6 +73,11 @@ export function ResultsScreen() {
   const fav = me?.favWeapon ? WEAPONS[me.favWeapon as keyof typeof WEAPONS]?.name : null;
   return (
     <div className="screen">
+      {adPending && (
+        <div className="overlay ad-break">
+          <div className="panel">Taking a short break…</div>
+        </div>
+      )}
       <div className="topbar">
         <h2 className={draw ? "" : win ? "glow-cyan" : "glow-mag"}>{draw ? "Draw" : br ? `Placed #${me?.placement || "?"}` : win ? "Victory" : "Defeat"}</h2>
         <span className="chip">
@@ -69,27 +85,27 @@ export function ResultsScreen() {
         </span>
         <span className="spacer" />
         {meta.offline && match?.practice && (
-          <button className="btn primary" onClick={() => startPractice(match.practice!)}>
+          <button className="btn primary" onClick={afterBreak(() => startPractice(match.practice!))}>
             Rematch
           </button>
         )}
         {meta.offline && (
           <button
             className="btn"
-            onClick={() => {
+            onClick={afterBreak(() => {
               store.set({ match: null, results: null });
               go("practice");
-            }}
+            })}
           >
             Change setup
           </button>
         )}
         {!meta.offline && isLeader && (
-          <button className="btn primary" onClick={playAgain}>
+          <button className="btn primary" onClick={afterBreak(playAgain)}>
             Play again
           </button>
         )}
-        <button className={`btn ${meta.offline ? "primary" : ""}`} onClick={back}>
+        <button className={`btn ${meta.offline ? "primary" : ""}`} onClick={afterBreak(back)}>
           {meta.offline ? "Main menu" : "Back to lobby"}
         </button>
       </div>
@@ -200,6 +216,7 @@ export function ResultsScreen() {
               </div>
             ))}
           </div>
+          <SupportLink />
           <div className="small muted">Results exist only in this tab — nothing is saved to a profile because there are no profiles.</div>
         </div>
       </div>
