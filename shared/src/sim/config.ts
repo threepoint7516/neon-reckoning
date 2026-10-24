@@ -7,7 +7,7 @@ export const MODE_INFO: Record<ModeId, { name: string; short: string; blurb: str
   gungame: { name: "Gun Game", short: "GUN", blurb: "Every elimination swaps you to the next weapon. First to score a kill with the final pistol wins.", teams: false, respawn: true },
   dom: { name: "Domination", short: "DOM", blurb: "Hold A, B and C to earn points. The overclocked point scores double.", teams: true, respawn: true },
   payload: { name: "Payload", short: "PAY", blurb: "Attackers escort the data core to the far side of the district. Checkpoints add time; defenders win if the clock runs out.", teams: true, respawn: true },
-  br: { name: "Battle Royale", short: "BR", blurb: "Glide in, loot, outlast the shrinking storm. No respawns — squads can revive.", teams: true, respawn: false },
+  br: { name: "Battle Royale", short: "BR", blurb: "Glide in, loot, outlast the shrinking storm. Knocked out in the first 90 s? You glide back in once. Squads can revive.", teams: true, respawn: false },
   training: { name: "Training Range", short: "TRAIN", blurb: "Learn the controls against passive target bots.", teams: false, respawn: true },
 };
 
@@ -80,7 +80,7 @@ export function makeMatchConfig(o: ConfigOpts): MatchConfig {
     case "dom":
       teamCount = 2;
       maxPlayers = teamSize * 2;
-      scoreLimit = 150;
+      scoreLimit = 250;
       timeLimit = 540;
       break;
     case "payload":

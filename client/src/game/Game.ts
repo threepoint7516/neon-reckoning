@@ -218,6 +218,7 @@ export class Game {
 
     this.unsub.push(conn.onMessage((m) => this.onMessage(m)));
     this.unsub.push(settingsStore.subscribe(() => this.applySettings()));
+    this.hud.online = !this.offline;
     // Session progression: level-ups and challenges celebrate mid-match.
     progress.beginMatch();
     this.viewmodel.setCamo(progress.camo());
@@ -414,7 +415,9 @@ export class Game {
           };
           audio.alert(win ? "start" : "end");
         }
-        setTimeout(() => this.cb.onEnd(m.results), 3500);
+        setTimeout(() => {
+          if (!this.disposed) this.cb.onEnd(m.results);
+        }, 3500);
         break;
       case "error":
         if (m.code === "disconnected") this.cb.onDisconnected(m.message);
@@ -712,6 +715,8 @@ export class Game {
             spectating: null,
             placement: 0,
             redeploy: !!e.rd,
+            killerHp: e.kh,
+            dist: e.kd,
           };
         } else if (e.kr === this.myId) {
           h.killBanner = { name: this.nameOf(e.v), t: now, head: e.h };

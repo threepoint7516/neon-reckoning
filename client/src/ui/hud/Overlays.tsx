@@ -183,6 +183,12 @@ export function DeathPanel({ game }: { game: Game }) {
         <div style={{ fontSize: 16, letterSpacing: "0.1em", marginTop: 6 }}>
           by <b style={{ color: "#ff2b4e" }}>{d.killer}</b> · {d.weapon}
           {d.head ? " · headshot" : ""}
+          {d.killerHp !== undefined && (
+            <div className="death-detail">
+              They had <b>{d.killerHp} HP</b> left{d.dist !== undefined ? ` · ${d.dist} m away` : ""}
+              {d.killerHp <= 30 ? " — so close!" : ""}
+            </div>
+          )}
         </div>
       )}
       {br && d.redeploy ? (

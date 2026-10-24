@@ -23,6 +23,15 @@ const TIPS = [
   "Data Caches grant Overdrive: faster movement, reloads and abilities.",
   "Railspike rounds punch through thin cover and multiple targets.",
   "Ladders: hold forward to climb, jump to kick off.",
+  "Slide-hop: land while holding crouch to flow straight into another slide and keep your speed.",
+  "You have a double jump — use it to reach ledges and dodge mid-air.",
+  "Green jump pads beside buildings launch you straight onto the roof.",
+  "Gun Game: every kill swaps your weapon. The pistol is last — one kill with it wins.",
+  "Battle Royale: watch for the SUPPLY DROP beam — power weapon and armor inside.",
+  "Battle Royale: knocked out in the first 90 seconds? You glide back in once.",
+  "After you respawn, the player who got you is marked for a few seconds. Revenge pays +50.",
+  "Shoot loot crates open for a random pickup.",
+  "Level up to unlock new weapon camos — pick one on the main menu.",
 ];
 
 /** Hosts the 3D canvas, the HUD and every in-match overlay. */

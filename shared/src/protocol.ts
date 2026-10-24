@@ -148,7 +148,7 @@ export type GameEvent =
   | { k: "shot"; p: number; w: string; o: number[]; e: number[][] }
   | { k: "hit"; to: number; v: number; d: number; h: boolean; x: boolean; sh?: boolean }
   | { k: "dmg"; to: number; s: number[]; d: number }
-  | { k: "kill"; kr: number; v: number; w: string; h: boolean; as: number[]; /** BR second chance: redeploys after this many seconds. */ rd?: number }
+  | { k: "kill"; kr: number; v: number; w: string; h: boolean; as: number[]; /** BR second chance: redeploys after this many seconds. */ rd?: number; /** Killer's health left and distance (m). */ kh?: number; kd?: number }
   | { k: "down"; v: number; by: number }
   | { k: "revive"; v: number; by: number }
   | { k: "boom"; x: number; y: number; z: number; r: number; t: string }

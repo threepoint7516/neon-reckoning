@@ -6,7 +6,7 @@ import type { NavGrid } from "../ai/nav";
 /** Escort radius: attackers within this many metres push the payload. */
 export const PAYLOAD_RADIUS = 5;
 /** Push speed (m/s) for one escort; more escorts push a little faster. */
-export const PAYLOAD_SPEED = 1.15;
+export const PAYLOAD_SPEED = 1.4;
 /** Roll-back speed (m/s) after the payload is left alone. */
 export const PAYLOAD_ROLLBACK = 0.35;
 /** Seconds without escorts before the payload starts rolling back. */

@@ -56,6 +56,8 @@ export class BotBrain {
   private failT = 0;
   private thinkT = 0;
   private stuckT = 0;
+  /** Escape manoeuvre (crouch + back off + strafe) after jumping didn't free the bot. */
+  private unstuckT = 0;
   private lastPos: Vec3 = { x: 0, y: 0, z: 0 };
   private strafeDir = 1;
   private strafeT = 0;
@@ -121,7 +123,7 @@ export class BotBrain {
       // Crawl toward the nearest teammate.
       const mate = [...m.players.values()].find((p) => p.team === me.team && p !== me && p.st.alive && !p.st.downed);
       if (mate) this.moveToward(inp, st, mate.st, 1);
-      return this.finish(inp, st, dt);
+      return this.finish(m, inp, st, dt);
     }
 
     if (!visible && st.health < 60 && st.injectors > 0 && !st.chan) this.wantHeal = true;
@@ -170,22 +172,42 @@ export class BotBrain {
       if (st.tactical === "shield" && visible && st.health < 60) inp.b |= Btn.TACTICAL;
       if (st.tactical === "mine" && this.state === "roam" && this.rng.next() < 0.004) inp.b |= Btn.TACTICAL;
     }
-    return this.finish(inp, st, dt);
+    return this.finish(m, inp, st, dt);
   }
 
-  private finish(inp: PlayerInput, st: MatchPlayer["st"], dt: number): PlayerInput {
-    // Stuck detection: if we wanted to move but did not, jump / repath.
+  private finish(m: Match, inp: PlayerInput, st: MatchPlayer["st"], dt: number): PlayerInput {
+    // Stuck detection: if we wanted to move but did not, jump; if that doesn't
+    // help (wedged in a window frame, against a pillar…), crouch and back off
+    // sideways for a moment, then repath.
     const moved = Math.hypot(st.x - this.lastPos.x, st.z - this.lastPos.z);
+    if (this.unstuckT > 0) {
+      this.unstuckT -= dt;
+      inp.mz = -1;
+      inp.mx = this.strafeDir;
+      inp.b = (inp.b | Btn.CROUCH) & ~(Btn.JUMP | Btn.SPRINT);
+    }
     const wants = Math.abs(inp.mx) + Math.abs(inp.mz) > 0.2;
-    if (wants && moved < 0.6 * dt) this.stuckT += dt;
+    if (wants && moved < 0.6 * dt && this.unstuckT <= 0) this.stuckT += dt;
     else this.stuckT = Math.max(0, this.stuckT - dt * 2);
     if (this.stuckT > 0.45) {
-      inp.b |= Btn.JUMP;
+      // Only jump if there's standing room on top of whatever is in the way
+      // (jumping into a window frame wedges the bot instead).
+      const sy = Math.sin(this.yaw);
+      const cy = Math.cos(this.yaw);
+      const wx = inp.mx * cy - inp.mz * sy;
+      const wz = -inp.mx * sy - inp.mz * cy;
+      const ax = st.x + wx * 0.7;
+      const az = st.z + wz * 0.7;
+      const room = !m.world.overlaps({ minX: ax - 0.35, maxX: ax + 0.35, minY: st.y + 1.0, maxY: st.y + 2.85, minZ: az - 0.35, maxZ: az + 0.35 });
+      if (room) inp.b |= Btn.JUMP;
+      else this.stuckT = Math.max(this.stuckT, 1.41);
       if (this.stuckT > 1.4) {
         this.path = [];
         this.goal = null;
         this.strafeDir *= -1;
         this.stuckT = 0;
+        this.unstuckT = 0.7;
+        this.failT = 0;
       }
     }
     this.lastPos = { x: st.x, y: st.y, z: st.z };

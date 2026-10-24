@@ -48,6 +48,17 @@ export function ResultsScreen() {
       go("play");
     }
   };
+  const myId = useStore((s) => s.myId);
+  const party = useStore((s) => s.party);
+  const isLeader = !party || party.members.find((m) => m.leader)?.id === myId;
+  const playAgain = () => {
+    // Back to the lobby and straight into the same queue.
+    store.set({ match: null, results: null });
+    online.send({ t: "leave_match" });
+    online.clearReconnect();
+    go("play");
+    online.send({ t: "queue" });
+  };
   const fav = me?.favWeapon ? WEAPONS[me.favWeapon as keyof typeof WEAPONS]?.name : null;
   return (
     <div className="screen">
@@ -73,7 +84,12 @@ export function ResultsScreen() {
             Change setup
           </button>
         )}
-        <button className="btn primary" onClick={back}>
+        {!meta.offline && isLeader && (
+          <button className="btn primary" onClick={playAgain}>
+            Play again
+          </button>
+        )}
+        <button className={`btn ${meta.offline ? "primary" : ""}`} onClick={back}>
           {meta.offline ? "Main menu" : "Back to lobby"}
         </button>
       </div>

@@ -205,6 +205,8 @@ export const BR_BOT_VS_BOT_DAMAGE = 0.4;
 /** BR second chance: anyone eliminated this early (seconds after landing) glides back in once. */
 export const BR_REDEPLOY_WINDOW = 90;
 const BR_REDEPLOY_DELAY = 5;
+/** Seconds your last killer stays marked after you respawn. */
+const REVENGE_MARK = 5;
 /** BR calm period: bots only start fights with other bots up close (they always engage players). */
 export const BR_CALM = 150;
 /** BR supply drops: first one after this many seconds, then every interval. */
@@ -482,6 +484,12 @@ export class Match {
     mp.history.length = 0;
     mp.bot?.reset(mp.st.yaw);
     this.emit({ k: "spawn", p: mp.id });
+    // Revenge marker: whoever got you is highlighted for your team for a few seconds.
+    const k = this.players.get(mp.lastKilledBy);
+    if (k && k.st.alive && k.team !== mp.team && this.cfg.mode !== "training") {
+      k.revealed.set(mp.team, this.time + REVENGE_MARK);
+      this.emit({ k: "msg", to: mp.id, t: `Revenge: ${k.name} is marked for ${REVENGE_MARK} s` });
+    }
   }
 
   /** Gun Game: equips the weapon for the player's current ladder tier. */
@@ -518,8 +526,15 @@ export class Match {
   }
 
   /** Fair spawn selection: far from living enemies, out of their sight, near teammates. */
+  /** Payload spawns: outdoor points only (open sky), so players come out on the street with the cart. */
+  private outdoorSpawns: Vec3[] | null = null;
+
   private pickSpawn(mp: MatchPlayer): Vec3 {
-    const spawns = this.district?.spawns ?? this.map.districts[0]!.spawns;
+    let spawns = this.district?.spawns ?? this.map.districts[0]!.spawns;
+    if (this.track) {
+      this.outdoorSpawns ??= spawns.filter((s) => !this.world.overlaps({ minX: s.x - 0.4, maxX: s.x + 0.4, minY: s.y + 2.2, maxY: s.y + 40, minZ: s.z - 0.4, maxZ: s.z + 0.4 }));
+      if (this.outdoorSpawns.length >= 6) spawns = this.outdoorSpawns;
+    }
     const enemies = [...this.players.values()].filter((p) => p !== mp && p.st.alive && (this.isFFA || p.team !== mp.team));
     const mates = [...this.players.values()].filter((p) => p !== mp && p.st.alive && !this.isFFA && p.team === mp.team);
     const scored = spawns.map((s) => {
@@ -535,7 +550,7 @@ export class Match {
       // Payload: attackers spawn behind the cart, defenders ahead of it.
       let side = 0;
       if (this.track) {
-        side = distXZ(s, trackPoint(this.track, this.cart.d + (mp.team === 0 ? -25 : 35))) * 0.9;
+        side = distXZ(s, trackPoint(this.track, this.cart.d + (mp.team === 0 ? -16 : 35))) * 0.9;
         if (distXZ(s, trackPoint(this.track, this.cart.d)) < 4) side += 40; // never inside the cart
       }
       return { s, score: minE - seen * 25 + mateBonus * 0.6 - side + this.rng.next() * 6 };
@@ -1084,7 +1099,12 @@ export class Match {
       this.emit({ k: "msg", to: v.id, t: "Demoted — back one weapon" });
     }
     const secondChance = this.isBR && this.phase === "live" && !v.redeployed && this.time - this.liveStart < BR_REDEPLOY_WINDOW && cause !== "leave";
-    this.emit({ k: "kill", kr: killer && killer !== v ? killer.id : -1, v: v.id, w: cause, h: head, as: assists, ...(secondChance ? { rd: BR_REDEPLOY_DELAY } : {}) });
+    const byOther = killer && killer !== v ? killer : null;
+    this.emit({
+      k: "kill", kr: byOther ? byOther.id : -1, v: v.id, w: cause, h: head, as: assists,
+      ...(secondChance ? { rd: BR_REDEPLOY_DELAY } : {}),
+      ...(byOther ? { kh: Math.max(1, Math.round(byOther.st.health)), kd: Math.round(distXZ(byOther.st, v.st)) } : {}),
+    });
     this.dropOnDeath(v);
     if (secondChance) {
       v.redeployed = true;
@@ -1865,8 +1885,10 @@ export class Match {
         this.emit({ k: "ann", t: `Point ${"ABC"[i]} lost`, c: "warn", tm: 1 - team });
       }
     }
+    // Owned points score every 2 s (the overclocked one double) — a 250-point race
+    // takes ~4–6 minutes instead of being over in two.
     if (t >= this.domTickAt) {
-      this.domTickAt = t + 1;
+      this.domTickAt = t + 2;
       for (let i = 0; i < this.points.length; i++) {
         const cp = this.points[i]!;
         if (cp.owner >= 0) this.teamScores[cp.owner] = (this.teamScores[cp.owner] ?? 0) + (i === this.overclocked ? 2 : 1);

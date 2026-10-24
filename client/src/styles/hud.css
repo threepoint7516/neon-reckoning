@@ -978,3 +978,13 @@
 .competitive .scorepops .pop {
   display: none;
 }
+
+.death-detail {
+  margin-top: 6px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  opacity: 0.9;
+}
+.death-detail b {
+  color: #ffd23f;
+}

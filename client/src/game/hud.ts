@@ -72,6 +72,9 @@ export interface HudData {
     killer: string; weapon: string; respawnAt: number; head: boolean; spectating: string | null; placement: number;
     /** BR second chance: gliding back in at respawnAt. */
     redeploy?: boolean;
+    /** Killer's health left and distance, for the death card. */
+    killerHp?: number;
+    dist?: number;
   } | null;
   phase: "starting" | "live" | "ended";
   timeLeft: number;

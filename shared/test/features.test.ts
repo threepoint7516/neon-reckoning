@@ -191,3 +191,23 @@ function flat() {
     ladders: [], signs: [], lights: [], water: [], districts: [], barrels: [], loot: [], roads: [], jumpPads: [], crates: [],
   } as unknown as import("../src/map/types").MapData;
 }
+
+describe("death feedback", () => {
+  it("kill events carry the killer's health and distance, and the killer is marked after you respawn", () => {
+    const m = new Match(makeMatchConfig({ mode: "tdm", arena: "neon_city", teamSize: 2, offline: true, seed: 8, timeLimit: 600 }), getFrontierMap());
+    const me = m.addPlayer({ id: 1, name: "Player", squad: 0, team: 0 });
+    const foe = m.addBot(1, 1);
+    for (let i = 0; i < 30 * 7; i++) m.step();
+    m.clearEvents();
+    foe.st.health = 37;
+    (m as unknown as { kill: (v: unknown, k: unknown, c: string, h: boolean) => void }).kill(me, foe, "pulse9", false);
+    const ev = (m as unknown as { events: { k: string; kh?: number; kd?: number }[] }).events.find((e) => e.k === "kill")!;
+    expect(ev.kh).toBe(37);
+    expect(ev.kd).toBeGreaterThanOrEqual(0);
+    // Respawn: the killer is revealed to my team for a few seconds.
+    for (let i = 0; i < 30 * 5 && !me.st.alive; i++) m.step();
+    expect(me.st.alive).toBe(true);
+    expect(foe.st.alive).toBe(true);
+    expect(m.isRevealedTo(foe, me.team)).toBe(true);
+  });
+});

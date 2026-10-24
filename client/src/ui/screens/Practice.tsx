@@ -8,7 +8,22 @@ import { LoadoutPicker } from "../components/LoadoutPicker";
 import { audio } from "../../audio/audio";
 
 /** Launches an offline match with AI opponents — no network involved. */
+/** The last practice setup this session (Quick Play repeats it). */
+let lastSetup: PracticeSetup | null = null;
+export const lastPractice = () => lastSetup;
+
+/** One click into a match: repeat the last practice, or a 6v6 TDM in a random district. */
+export function quickPlay(): void {
+  const arenas = DISTRICT_IDS;
+  startPractice(
+    lastSetup ?? {
+      mode: "tdm", arena: arenas[Math.floor(Math.random() * arenas.length)]!, teamSize: 6, bots: 11, difficulty: "standard", modifiers: [], timeLimit: 480,
+    },
+  );
+}
+
 export function startPractice(setup: PracticeSetup): void {
+  lastSetup = setup;
   const s = store.get();
   const conn = new LocalConnection({
     mode: setup.mode as ModeId,

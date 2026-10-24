@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  getFrontierMap, randomCallsign, sanitizeName, NAME_MAX, GAME_TITLE, WEAPONS, WEAPON_IDS, GRENADES, GRENADE_IDS, TACTICALS, TACTICAL_IDS, INJECTOR, PLATE,
+  getFrontierMap, randomCallsign, sanitizeName, NAME_MAX, GAME_TITLE, WEAPONS, WEAPON_IDS, GRENADES, GRENADE_IDS, TACTICALS, TACTICAL_IDS, INJECTOR, PLATE, MODE_INFO,
 } from "@neon/shared";
 import { go, store, toast, useStore } from "../../state/store";
 import { settingsStore, useSettings } from "../../state/settings";
@@ -9,7 +9,7 @@ import { audio } from "../../audio/audio";
 import { online } from "../../net/online";
 import { serverUrl } from "../../net/connection";
 import { getTextures } from "../../game/render/textures";
-import { startPractice } from "./Practice";
+import { lastPractice, quickPlay, startPractice } from "./Practice";
 import { LevelPanel } from "../components/LevelPanel";
 
 function Logo({ small = false }: { small?: boolean }) {
@@ -170,8 +170,12 @@ function Callsign() {
   );
 }
 
+/** Touch-only devices (phones, most tablets) can browse the menus but can't play. */
+const touchOnly = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches && !matchMedia("(any-pointer: fine)").matches;
+
 export function MainMenu() {
   const s = useSettings();
+  const last = lastPractice();
   const btn = (label: string, sub: string, onClick: () => void, primary = false) => (
     <button
       className={`btn ${primary ? "primary big" : ""}`}
@@ -193,6 +197,7 @@ export function MainMenu() {
           <div className="tagline">Neon Frontier is waiting</div>
           <nav className="menu-nav">
             {btn("Play", "Online · Solo / Duo / Trio / Squad", () => go("play"), true)}
+            {btn("Quick Play", last ? `Again: ${MODE_INFO[last.mode].name} vs AI` : "6v6 vs AI, right now", () => quickPlay())}
             {btn("Practice", "Offline vs AI · any mode", () => go("practice"))}
             {btn("Training Range", s.tutorialSeen ? "Controls refresher" : "Start here!", () => {
               settingsStore.set({ tutorialSeen: true });
@@ -203,6 +208,12 @@ export function MainMenu() {
             {btn("Privacy", "What we keep (almost nothing)", () => go("privacy"))}
             {btn("Credits", "", () => go("credits"))}
           </nav>
+          {touchOnly() && (
+            <div className="panel" style={{ marginTop: 18, maxWidth: 420, borderColor: "var(--magenta)" }}>
+              <h3 style={{ color: "var(--magenta)" }}>Keyboard &amp; mouse needed</h3>
+              <div className="small">NEON RECKONING is played with a keyboard and mouse. You can look around the menus here, but jump on a computer to play.</div>
+            </div>
+          )}
           {!s.tutorialSeen && (
             <div className="panel" style={{ marginTop: 18, maxWidth: 420, borderColor: "var(--yellow)" }}>
               <h3 style={{ color: "var(--yellow)" }}>New here?</h3>

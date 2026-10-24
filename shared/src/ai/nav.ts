@@ -36,7 +36,7 @@ export class NavGrid {
   /** Doorway waypoints for links that are not straight centre-to-centre (key: cell * 4 + link). */
   private doors = new Map<number, Vec3>();
 
-  constructor(world: CollisionWorld, map: MapData, b: { minX: number; minZ: number; maxX: number; maxZ: number }) {
+  constructor(private world: CollisionWorld, map: MapData, b: { minX: number; minZ: number; maxX: number; maxZ: number }) {
     this.x0 = b.minX;
     this.z0 = b.minZ;
     this.w = Math.max(1, Math.floor((b.maxX - b.minX) / this.cell));
@@ -133,7 +133,12 @@ export class NavGrid {
     return k >= 0 && this.open[k] === 1;
   }
 
-  /** Nearest walkable cell to (x,z) within a small search radius. */
+  /**
+   * Nearest walkable cell to (x,z) within a small search radius. When a height
+   * is given (a real position), cells that can be walked to in a straight line
+   * win over closer ones behind a wall — otherwise a bot in a room corner would
+   * be routed from the street outside and walk into the wall forever.
+   */
   nearest(x: number, z: number, y?: number): number {
     const c = this.index(x, z);
     if (this.walkable(c) && (y === undefined || Math.abs(this.height[c]! - y) < 2.5)) return c;
@@ -141,6 +146,8 @@ export class NavGrid {
     const cj = Math.floor((z - this.z0) / this.cell);
     let best = -1;
     let bd = Infinity;
+    let fallback = -1;
+    let fd = Infinity;
     for (let r = 1; r <= 6; r++) {
       for (let dj = -r; dj <= r; dj++)
         for (let di = -r; di <= r; di++) {
@@ -151,14 +158,27 @@ export class NavGrid {
           const k = j * this.w + i;
           if (!this.open[k]) continue;
           const d = di * di + dj * dj + (y !== undefined ? Math.abs(this.height[k]! - y) * 4 : 0);
-          if (d < bd) {
+          if (d < fd) {
+            fd = d;
+            fallback = k;
+          }
+          if (d < bd && (y === undefined || this.reachable(x, y, z, k))) {
             bd = d;
             best = k;
           }
         }
       if (best >= 0) return best;
     }
-    return -1;
+    return fallback;
+  }
+
+  /** Straight-line walk from a position to a cell centre is free of walls (hip and chest height). */
+  private reachable(x: number, y: number, z: number, k: number): boolean {
+    const c = this.center(k);
+    for (const h of [0.7, 1.4]) {
+      if (!this.world.lineOfSight({ x, y: y + h, z }, { x: c.x, y: c.y + h, z: c.z })) return false;
+    }
+    return true;
   }
 
   randomCell(rng: Rng, near?: Vec3, radius = 30): number {
