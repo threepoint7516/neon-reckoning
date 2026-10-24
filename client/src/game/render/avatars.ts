@@ -1,8 +1,10 @@
 import * as THREE from "three";
 import { WEAPONS, weaponFromIndex } from "@neon/shared";
-import { textTexture } from "./textures";
+import { getTextures, textTexture } from "./textures";
 
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const sphereGeo = new THREE.SphereGeometry(1, 16, 12);
+const capsuleGeo = new THREE.CapsuleGeometry(1, 1, 6, 12);
 
 function part(w: number, h: number, d: number, mat: THREE.Material, x: number, y: number, z: number): THREE.Mesh {
   const m = new THREE.Mesh(boxGeo, mat);
@@ -51,23 +53,33 @@ export class Avatar {
   private mats: THREE.Material[] = [];
   private phase = 0;
   private deadT = 0;
-  private teamMat: THREE.MeshBasicMaterial;
+  private teamMat: THREE.MeshToonMaterial;
 
   constructor(teamColor: number, name: string, showTag: boolean, isBot: boolean) {
-    const armor = new THREE.MeshStandardMaterial({ color: 0x23232f, roughness: 0.45, metalness: 0.7 });
-    const suit = new THREE.MeshStandardMaterial({ color: 0x15151d, roughness: 0.8, metalness: 0.2 });
-    this.teamMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(teamColor).multiplyScalar(2.2), toneMapped: false });
-    const gunMat = new THREE.MeshStandardMaterial({ color: 0x1b1b22, roughness: 0.4, metalness: 0.8 });
+    // Chunky, rounded toon runner: team-coloured suit, white helmet, goggles.
+    const T = getTextures();
+    const toon = (color: number, emissive = 0) => new THREE.MeshToonMaterial({ color, gradientMap: T.toon, emissive, emissiveIntensity: emissive ? 0.25 : 0 });
+    this.teamMat = toon(teamColor);
+    const white = toon(0xffffff);
+    const dark = toon(0x2b2d42);
+    const goggle = new THREE.MeshBasicMaterial({ color: 0x9be7ff });
+    const gunMat = toon(0x3d405b);
     const glowMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
-    this.mats.push(armor, suit, this.teamMat, gunMat, glowMat);
+    this.mats.push(this.teamMat, white, dark, goggle, gunMat, glowMat);
+    const round = (geo: THREE.BufferGeometry, m: THREE.Material, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
+      const mesh = new THREE.Mesh(geo, m);
+      mesh.scale.set(sx, sy, sz);
+      mesh.position.set(x, y, z);
+      mesh.castShadow = true;
+      return mesh;
+    };
 
-    this.legL = part(0.22, 0.85, 0.24, suit, -0.13, -0.42, 0);
-    this.legR = part(0.22, 0.85, 0.24, suit, 0.13, -0.42, 0);
+    this.legL = round(capsuleGeo, dark, 0.15, 0.28, 0.15, -0.14, -0.4, 0);
+    this.legR = round(capsuleGeo, dark, 0.15, 0.28, 0.15, 0.14, -0.4, 0);
     const hips = new THREE.Group();
     hips.position.y = 0.88;
     const legLPivot = new THREE.Group();
     legLPivot.add(this.legL);
-    legLPivot.position.x = 0;
     const legRPivot = new THREE.Group();
     legRPivot.add(this.legR);
     hips.add(legLPivot, legRPivot);
@@ -75,35 +87,37 @@ export class Avatar {
     this.legR.userData.pivot = legRPivot;
     this.body.add(hips);
 
-    this.torso = part(0.52, 0.62, 0.3, armor, 0, 1.2, 0);
+    this.torso = round(capsuleGeo, this.teamMat, 0.36, 0.26, 0.28, 0, 1.18, 0);
     this.body.add(this.torso);
-    this.body.add(part(0.54, 0.06, 0.32, this.teamMat, 0, 1.36, 0));
-    this.body.add(part(0.18, 0.3, 0.12, suit, 0, 1.15, 0.2)); // backpack
-    this.body.add(part(0.04, 0.22, 0.02, this.teamMat, 0, 1.18, 0.265));
+    this.body.add(round(boxGeo, white, 0.5, 0.08, 0.36, 0, 1.0, 0)); // belt
+    this.body.add(round(boxGeo, this.teamMat, 0.3, 0.36, 0.16, 0, 1.18, 0.24)); // backpack
+    this.body.add(round(sphereGeo, white, 0.1, 0.1, 0.1, 0, 1.4, 0.32)); // pack light
 
     this.head = new THREE.Group();
-    this.head.position.y = 1.6;
-    this.head.add(part(0.28, 0.3, 0.3, armor, 0, 0, 0));
-    this.head.add(part(0.24, 0.07, 0.04, this.teamMat, 0, 0.02, -0.16));
+    this.head.position.y = 1.62;
+    this.head.add(round(sphereGeo, white, 0.25, 0.25, 0.25, 0, 0, 0));
+    this.head.add(round(boxGeo, goggle, 0.36, 0.1, 0.1, 0, 0.03, -0.2));
+    this.head.add(round(boxGeo, dark, 0.4, 0.04, 0.06, 0, 0.03, -0.16));
+    this.head.add(round(sphereGeo, this.teamMat, 0.06, 0.06, 0.06, 0, 0.26, 0)); // helmet bobble
     this.body.add(this.head);
 
     const arm = (side: number) => {
       const g = new THREE.Group();
-      g.position.set(side * 0.33, 1.42, 0);
-      g.add(part(0.14, 0.15, 0.15, this.teamMat, 0, 0.04, 0));
-      const a = part(0.13, 0.55, 0.14, suit, 0, -0.26, 0);
-      g.add(a);
+      g.position.set(side * 0.36, 1.38, 0);
+      g.add(round(sphereGeo, this.teamMat, 0.12, 0.12, 0.12, 0, 0.02, 0));
+      g.add(round(capsuleGeo, this.teamMat, 0.1, 0.16, 0.1, 0, -0.24, 0));
+      g.add(round(sphereGeo, white, 0.08, 0.08, 0.08, 0, -0.5, 0)); // glove
       return g;
     };
     this.armL = arm(-1);
     this.armR = arm(1);
     this.body.add(this.armL, this.armR);
-    this.gun = part(0.09, 0.12, 0.7, gunMat, 0.12, 1.22, -0.38);
-    this.gunGlow = part(0.02, 0.03, 0.5, glowMat, 0.12, 1.29, -0.38);
+    this.gun = part(0.1, 0.13, 0.62, gunMat, 0.12, 1.22, -0.38);
+    this.gunGlow = part(0.11, 0.04, 0.4, glowMat, 0.12, 1.3, -0.4);
     this.body.add(this.gun, this.gunGlow);
 
-    // Insertion glider wing.
-    this.glider = part(2.2, 0.05, 0.7, this.teamMat, 0, 2.3, 0.1);
+    // Insertion glider: a bright kite wing.
+    this.glider = part(2.4, 0.05, 0.8, this.teamMat, 0, 2.3, 0.1);
     this.glider.visible = false;
     this.body.add(this.glider);
 
@@ -130,7 +144,7 @@ export class Avatar {
   }
 
   setTeamColor(c: number): void {
-    this.teamMat.color.setHex(c).multiplyScalar(2.2);
+    this.teamMat.color.setHex(c);
   }
 
   update(s: AvatarState, dt: number, time: number): void {
@@ -163,7 +177,7 @@ export class Avatar {
     this.gunGlow.rotation.x = s.pitch * 0.7;
     const w = weaponFromIndex(s.weapon);
     if (w) {
-      (this.gunGlow.material as THREE.MeshBasicMaterial).color.setHex(WEAPONS[w].color).multiplyScalar(2);
+      (this.gunGlow.material as THREE.MeshBasicMaterial).color.setHex(WEAPONS[w].color);
       this.gun.scale.z = w === "phantom" ? 0.35 : w === "longshot" || w === "railspike" ? 1.25 : w === "titan" || w === "nova" ? 1.05 : 0.8;
     }
     this.glider.visible = s.gliding;

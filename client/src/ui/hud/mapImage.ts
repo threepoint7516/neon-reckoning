@@ -21,23 +21,32 @@ export function mapImage(minX: number, minZ: number, maxX: number, maxZ: number,
   c.width = w;
   c.height = h;
   const x = c.getContext("2d")!;
-  x.fillStyle = "#0a0816";
+  x.fillStyle = "#cbd9b8";
   x.fillRect(0, 0, w, h);
   for (const wr of map.water) {
-    x.fillStyle = "#06223a";
+    x.fillStyle = "#4cc9f0";
     x.fillRect((wr.minX - minX) * scale, (wr.minZ - minZ) * scale, (wr.maxX - wr.minX) * scale, (wr.maxZ - wr.minZ) * scale);
   }
   for (const r of map.roads) {
-    x.fillStyle = "#1c1830";
+    x.fillStyle = "#8a93a3";
     x.fillRect((r.minX - minX) * scale, (r.minZ - minZ) * scale, (r.maxX - r.minX) * scale, (r.maxZ - r.minZ) * scale);
   }
   const boxes = [...map.boxes].filter((b) => !(b.flags & BoxFlag.DECOR) && b.mat !== Mat.BARRIER && b.maxY > 0.3).sort((a, b) => a.maxY - b.maxY);
   for (const b of boxes) {
     if (b.maxX < minX || b.minX > maxX || b.maxZ < minZ || b.minZ > maxZ) continue;
+    // Buildings keep their real (bright) colour; taller ones get a stronger outline.
     const hgt = Math.min(1, Math.max(0, b.maxY / 30));
-    const l = 22 + hgt * 48;
-    x.fillStyle = b.flags & BoxFlag.BULLET_PASS ? "rgba(140,160,200,0.5)" : `hsl(258, 30%, ${l}%)`;
-    x.fillRect((b.minX - minX) * scale, (b.minZ - minZ) * scale, Math.max(1, (b.maxX - b.minX) * scale), Math.max(1, (b.maxZ - b.minZ) * scale));
+    const rx = (b.minX - minX) * scale;
+    const rz = (b.minZ - minZ) * scale;
+    const rw = Math.max(1, (b.maxX - b.minX) * scale);
+    const rh = Math.max(1, (b.maxZ - b.minZ) * scale);
+    x.fillStyle = b.flags & BoxFlag.BULLET_PASS ? "rgba(255,255,255,0.6)" : `#${b.color.toString(16).padStart(6, "0")}`;
+    x.fillRect(rx, rz, rw, rh);
+    if (b.maxY > 2 && rw > 2 && rh > 2) {
+      x.strokeStyle = `rgba(31,42,68,${0.2 + hgt * 0.5})`;
+      x.lineWidth = 1;
+      x.strokeRect(rx + 0.5, rz + 0.5, rw - 1, rh - 1);
+    }
   }
   const img = { canvas: c, minX, minZ, scale };
   cache.set(key, img);

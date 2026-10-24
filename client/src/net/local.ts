@@ -12,6 +12,8 @@ export interface PracticeOptions {
   difficulty: Difficulty;
   modifiers: ModifierId[];
   timeLimit?: number;
+  /** Team to play on in two-team modes (payload: 0 attack, 1 defend). */
+  side?: number;
   name: string;
   loadout: Loadout;
 }
@@ -42,12 +44,13 @@ export class LocalConnection implements Connection {
     });
     this.cfg = cfg;
     this.match = new Match(cfg, getFrontierMap());
-    const teamMode = cfg.mode === "tdm" || cfg.mode === "dom";
-    this.match.addPlayer({ id: ME, name: o.name, squad: 0, team: 0, loadout: o.loadout ?? DEFAULT_LOADOUT });
+    const teamMode = cfg.mode === "tdm" || cfg.mode === "dom" || cfg.mode === "payload";
+    const mine = teamMode && o.side === 1 ? 1 : 0;
+    this.match.addPlayer({ id: ME, name: o.name, squad: mine, team: mine, loadout: o.loadout ?? DEFAULT_LOADOUT });
     const total = Math.max(1, Math.min(cfg.maxPlayers, o.bots + 1));
     for (let i = 1; i < total; i++) {
       if (teamMode) {
-        const team = i < cfg.teamSize ? 0 : 1;
+        const team = i < cfg.teamSize ? mine : 1 - mine;
         this.match.addBot(team, team);
       } else if (cfg.mode === "br") {
         const team = Math.floor(i / cfg.teamSize);
@@ -60,7 +63,7 @@ export class LocalConnection implements Connection {
       this.emit({
         t: "match_start",
         info: {
-          matchId: "practice", config: cfg, you: ME, roster: this.match.roster(), reconnectToken: "", barrels: this.match.barrelList(),
+          matchId: "practice", config: cfg, you: ME, roster: this.match.roster(), reconnectToken: "", barrels: this.match.barrelList(), crates: this.match.crateList(),
         },
       });
       this.lastRoster = this.match.rosterVersion;

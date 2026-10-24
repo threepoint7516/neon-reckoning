@@ -3,6 +3,7 @@ import { ACTION_LABELS, DEFAULT_BINDS, PRESETS, keyLabel, settingsStore, useSett
 import type { Action, Quality, Settings } from "../../state/settings";
 import { go, store } from "../../state/store";
 import { audio } from "../../audio/audio";
+import { progress, useProgress } from "../../state/progress";
 
 type Tab = "controls" | "graphics" | "audio" | "access" | "privacy";
 
@@ -83,6 +84,7 @@ function Binder() {
 
 export function SettingsPanel({ compact = false }: { compact?: boolean }) {
   const s = useSettings();
+  const prog = useProgress();
   const [tab, setTab] = useState<Tab>("controls");
   const set = (p: Partial<Settings>) => settingsStore.set(p);
   return (
@@ -146,6 +148,7 @@ export function SettingsPanel({ compact = false }: { compact?: boolean }) {
               <Check label="Rain" value={s.rain} onChange={(v) => set({ rain: v })} hint="Applies to the next match." />
               <Check label="Dynamic shadows" value={s.shadows} onChange={(v) => set({ shadows: v })} hint="Applies to the next match. Costly on integrated GPUs." />
               <Check label="Show FPS & latency" value={s.showFps} onChange={(v) => set({ showFps: v })} />
+
             </div>
           </div>
         )}
@@ -202,7 +205,13 @@ export function SettingsPanel({ compact = false }: { compact?: boolean }) {
               label="Remember these settings on this device"
               value={s.remember}
               onChange={(v) => set({ remember: v })}
-              hint="Off by default. When on, only your control, graphics, audio and accessibility preferences are saved in this browser's localStorage. Your callsign, matches and stats are never stored."
+              hint="Off by default. When on, only your control, graphics, audio and accessibility preferences are saved in this browser's localStorage. Your callsign and match stats are never stored."
+            />
+            <Check
+              label="Remember my level, XP and weapon finish on this device"
+              value={prog.remember}
+              onChange={(v) => progress.setRemember(v)}
+              hint="Off by default. When on, only two values are saved in this browser's localStorage: your total XP (your level is worked out from it) and the camo you picked. Nothing is sent to any server. Turning it off deletes the saved copy straight away; your progress in this tab stays until you close it."
             />
             <button className="btn small" style={{ alignSelf: "flex-start" }} onClick={() => settingsStore.reset()}>
               Reset all settings to defaults

@@ -40,6 +40,10 @@ export interface PlayerState {
   crouched: boolean;
   slideT: number;
   slideCd: number;
+  /** Air jumps left (double jump), refilled on landing. */
+  airJumps: number;
+  /** Seconds of fall-damage immunity after a jump pad launch. */
+  padT: number;
   gliding: boolean;
   ladderCd: number;
   sprinting: boolean;
@@ -83,7 +87,7 @@ export interface StepEnv {
 }
 
 /** Visual/audio cues raised by the simulation (used for local effects). */
-export type SimFx = "shot" | "reload" | "dry" | "jump" | "land" | "swap" | "slide" | "heal" | "plate" | "throw" | "chanDone";
+export type SimFx = "shot" | "reload" | "dry" | "jump" | "djump" | "pad" | "land" | "swap" | "slide" | "heal" | "plate" | "throw" | "chanDone";
 
 /**
  * Authority hooks. On the server these resolve hits, spawn projectiles and
@@ -119,7 +123,7 @@ export function createPlayerState(id: number, team: number, loadout: Loadout): P
   return {
     id, team, alive: false, downed: false,
     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: 0,
-    onGround: false, crouched: false, slideT: 0, slideCd: 0, gliding: false, ladderCd: 0, sprinting: false, prevB: 0,
+    onGround: false, crouched: false, slideT: 0, slideCd: 0, airJumps: 1, padT: 0, gliding: false, ladderCd: 0, sprinting: false, prevB: 0,
     health: MAX_HEALTH, armor: 0,
     slots: [makeSlot(loadout.primary), makeSlot(loadout.secondary), null], active: 0,
     swapT: 0, fireCd: 0, reloadT: 0, burstLeft: 0, burstT: 0, spread: 0, sprayN: 0, sprayT: 0, ads: 0,
@@ -142,6 +146,8 @@ export function resetForSpawn(p: PlayerState, loadout: Loadout, kit: SpawnKit, p
   p.onGround = false;
   p.crouched = false;
   p.slideT = p.slideCd = 0;
+  p.airJumps = 1;
+  p.padT = 0;
   p.gliding = false;
   p.health = MAX_HEALTH;
   p.armor = kit.armor;
@@ -188,6 +194,7 @@ export function stepPlayer(p: PlayerState, inp: PlayerInput, env: StepEnv, hooks
 
   // Timers.
   p.slideCd = Math.max(0, p.slideCd - dt);
+  p.padT = Math.max(0, p.padT - dt);
   p.ladderCd = Math.max(0, p.ladderCd - dt);
   p.spawnProt = Math.max(0, p.spawnProt - dt);
   p.flash = Math.max(0, p.flash - dt);
@@ -279,6 +286,7 @@ function move(p: PlayerState, inp: PlayerInput, edge: number, env: StepEnv, hook
       p.vx += (tx - p.vx) * Math.min(1, 2.5 * dt);
       p.vz += (tz - p.vz) * Math.min(1, 2.5 * dt);
     } else if (p.onGround) {
+      p.airJumps = 1;
       if (p.slideT > 0) {
         const s = Math.hypot(p.vx, p.vz);
         if (s > 0) {
@@ -307,6 +315,12 @@ function move(p: PlayerState, inp: PlayerInput, edge: number, env: StepEnv, hook
         hooks.fx(p, "jump");
       }
     } else {
+      // Double jump: one extra jump in the air, refilled on landing.
+      if ((edge & Btn.JUMP) && p.airJumps > 0 && !p.downed) {
+        p.airJumps--;
+        p.vy = JUMP_VELOCITY * 0.9 * Math.sqrt(env.gravity);
+        hooks.fx(p, "djump");
+      }
       // Air: Quake-style capped acceleration enables subtle air-strafing.
       const cur = p.vx * wx + p.vz * wz;
       const add = Math.min(AIR_MAX_SPEED, wishSpeed) - cur;
@@ -317,6 +331,18 @@ function move(p: PlayerState, inp: PlayerInput, edge: number, env: StepEnv, hook
       }
     }
     if (!p.gliding) p.vy -= GRAVITY * env.gravity * dt;
+    // Jump pads launch players along a fixed arc (rooftop routes, plaza bounces).
+    const pad = !p.gliding && !p.downed && p.vy <= 1 ? world.padAt(box) : null;
+    if (pad) {
+      p.vx = pad.vx + wx * 1.5;
+      p.vy = pad.vy * Math.sqrt(env.gravity);
+      p.vz = pad.vz + wz * 1.5;
+      p.onGround = false;
+      p.slideT = 0;
+      p.airJumps = 1;
+      p.padT = 4;
+      hooks.fx(p, "pad");
+    }
   }
 
   // Hard cap horizontal speed (anti-exploit).
@@ -361,8 +387,23 @@ function move(p: PlayerState, inp: PlayerInput, edge: number, env: StepEnv, hook
     p.vy = 0;
     if (!p.onGround) {
       if (p.gliding) p.gliding = false;
+      else if (p.padT > 0) p.padT = 0;
       else if (impact > FALL_DAMAGE_THRESHOLD) hooks.fallDamage(p, (impact - FALL_DAMAGE_THRESHOLD) * FALL_DAMAGE_PER_MS);
       if (impact > 4) hooks.fx(p, "land", impact);
+      // Slide-hop: landing fast with crouch held flows straight into a slide,
+      // keeping momentum (the boost only applies when the slide is off cooldown).
+      const hs = Math.hypot(p.vx, p.vz);
+      if ((b & Btn.CROUCH) && !p.downed && !p.gliding && p.slideT <= 0 && hs >= SLIDE_MIN_SPEED) {
+        p.slideT = SLIDE_TIME;
+        if (p.slideCd <= 0) {
+          p.slideCd = SLIDE_TIME + SLIDE_COOLDOWN;
+          const k = Math.min(hs + SLIDE_BOOST * 0.5, 13) / hs;
+          p.vx *= k;
+          p.vz *= k;
+        }
+        p.crouched = true;
+        hooks.fx(p, "slide");
+      }
     }
     p.onGround = true;
   } else if (dy > 0 && myd < dy - 1e-5) {

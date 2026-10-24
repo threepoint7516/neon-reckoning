@@ -1,10 +1,12 @@
 # NEON RECKONING
 
-A free-to-play, browser-based cyberpunk arena shooter with real authoritative multiplayer. No accounts, no trackers, no paid advantages. Everything you see and hear (map, textures, models, sound, music) is generated procedurally in code. There are no external assets.
+A free-to-play, browser-based arena shooter set in a bright, toy-like city at night, with real authoritative multiplayer. No accounts, no trackers, no paid advantages. Everything you see and hear (map, textures, models, sound, music) is generated procedurally in code. There are no external assets.
 
-- **Modes:** Team Deathmatch, Free-for-All, Domination, Battle Royale, plus offline **Practice** (any mode vs AI) and a **Training Range** tutorial.
-- **Party sizes:** Solo, Duo, Trio, Squad, with party codes, invite links, ready checks, leader controls, an opt-in "Fill squad" option and opt-in, clearly labelled AI fill.
-- **World:** *Neon Frontier*, a 384 m × 384 m region with 8 districts (Neon City, Rusthaven, Eclipse Harbor, Sector Zero, Chrome Valley, The Outlands, Blacklight Market, Skyrail Station) and an electrified bay. It has interiors with stairs, rooftops, ladders, skybridges, an elevated highway, a tunnel, an underground lab, docks and a cargo ship. Arena modes use one district; Battle Royale uses the whole region.
+- **Modes:** Team Deathmatch, Free-for-All, **Gun Game**, Domination, Payload (escort), Battle Royale, plus offline **Practice** (any mode vs AI) and a **Training Range** tutorial.
+- **Party sizes:** Solo, Duo, Trio, Squad, with party codes, invite links, ready checks, leader controls, an opt-in "Fill squad" option for Battle Royale and opt-in, clearly labelled AI fill.
+- **Match sizes:** online TDM, Domination and Payload are always 6v6 (your party stays together on one team), FFA has 12 players and Battle Royale 24. Practice defaults to a full 6v6 and goes up to 8v8.
+- **Bots fill the gaps (AI fill on by default, always labelled `BOT`):** when nobody else is online, a queued match starts in about 2 s, filled with bots. When other players are online it waits 8 s for them first. Players who queue while a public match of the same mode is running drop straight into it, taking a bot's slot, and a bot takes over the slot of anyone who leaves, so teams stay full. Private matches never take drop-ins.
+- **World:** *Neon Frontier*, a 384 m × 384 m region with 8 districts (Neon City, Rusthaven, Eclipse Harbor, Sector Zero, Chrome Valley, The Outlands, Blacklight Market, Skyrail Station) and an electrified bay. Each district is a dense, Krunker-style street grid: a 4 × 4 grid of 23 m city blocks separated by 7 m streets, with an 11 m central boulevard running east–west. There is almost no open ground. Blocks are packed with buildings whose floors are split into furnished rooms with doorways, plus inside and outdoor staircases, rooftops, ladders and rooftop bridges across the side streets. Each district has its own landmark: an elevated highway, an elevated railway, an underground lab, a container maze, docks and a cargo ship, a radio tower, and more. The whole map is ~28,500 axis-aligned boxes. Arena modes use one district; Battle Royale uses the whole region.
 - **Arsenal:** 10 distinct weapons (AR, SMG, shotgun, sniper, DMR with penetration, LMG, pistol, burst rifle, chain-lightning energy weapon, and an experimental plasma cannon), 4 grenades (frag, smoke, flash, EMP), 4 tactical abilities (recon pulse, deployable shield, proximity mine, remote charge), healing injectors and armor plates.
 
 ---
@@ -68,7 +70,7 @@ neon-reckoning/
 │  ├─ src/net/         # online.ts (WebSocket), local.ts (offline host), connection.ts
 │  ├─ src/audio/       # audio.ts (synthesized SFX & music)
 │  ├─ src/ui/          # screens + HUD
-│  └─ src/state/       # store, settings, session-only challenges
+│  └─ src/state/       # store, settings, session-only challenges and progression (XP, levels, camos)
 ├─ netlify.toml        # client deployment
 └─ render.yaml         # example server deployment (Render Blueprint)
 ```
@@ -137,7 +139,8 @@ Server environment variables (server-only, never exposed to browsers; see `serve
 | `PORT` | Listen port (most hosts set this automatically) |
 | `ALLOWED_ORIGINS` | Comma-separated allowed browser origins, e.g. `https://neon-reckoning.netlify.app`. **Required in production**; with it empty, only localhost origins are accepted. |
 | `MAX_ROOMS`, `MAX_SESSIONS` | Capacity limits (default 40 / 400) |
-| `AI_FILL_WAIT` | Seconds before opt-in AI fill starts a match (default 20) |
+| `AI_FILL_WAIT` | Seconds a queued party waits for other players before AI fill starts the match (default 8) |
+| `AI_FILL_WAIT_ALONE` | Same, when no other player is online and free to join (default 2) |
 | `NODE_ENV` | `production` |
 
 **Render:** the included `render.yaml` is a Blueprint. Create a new Blueprint from your repo and set `ALLOWED_ORIGINS`. Free instances sleep when idle, so the first connection can take ~30–60 s; the client shows "waking up" errors honestly and offers Practice.
@@ -165,7 +168,11 @@ Without `VITE_GAME_SERVER_URL` the build is still fully usable: Practice and Tra
 - **Callsign:** random (e.g. `NeonRaven742`), rerollable or editable, held only in the tab's memory. It's sent to the game server only while you play online so others can see it.
 - **Server memory:** names, parties, team assignments, positions and scores exist in RAM only while the party or room exists. Rooms are freed when everyone leaves, 60 s after a match ends, or after 40 minutes at most. Disconnected slots are held for 30 s for reconnection.
 - **Server logs** contain only operational events (start, room opened/closed with mode and counts, errors). They never contain names, IPs or message contents.
-- **Browser storage:** nothing by default. If the player enables *Settings → Storage → Remember these settings*, only control/graphics/audio/accessibility preferences are saved in `localStorage` (`neon-reckoning:prefs`), never identity or stats.
+- **Browser storage:** nothing by default. There are two separate opt-ins, both in *Settings → Storage* and both off by default:
+  - *Remember these settings* saves only control/graphics/audio/accessibility preferences in `localStorage` (`neon-reckoning:prefs`).
+  - *Remember my level, XP and weapon finish* saves exactly two values, `{ v: 1, xp, camo }`, in `localStorage` (`neon-reckoning:progress`). Your level is recomputed from total XP on load, and malformed or out-of-range data is ignored. Turning the option off deletes the key.
+
+  Neither is ever sent to the server, and neither contains your callsign, match history or per-match stats.
 - Hosting providers (Netlify and your server host) may keep their own standard access logs (IP, time). That is outside the game's control and the in-game Privacy screen says so.
 
 ---
@@ -190,11 +197,22 @@ Ladders: hold forward to climb, jump to kick off.
 
 ## Game systems at a glance
 
-- **Movement:** acceleration-based walk/sprint, crouch, slide (with slide-jumps), Quake-style air control, step-up for stairs, ladders, fall damage, BR glide insertion. Speed is hard-capped.
+- **Movement:** acceleration-based walk/sprint, crouch, slide (with slide-jumps and **slide-hopping**: land with crouch held to flow straight into another slide and keep your speed), **double jump**, Quake-style air control, step-up for stairs (with camera smoothing so steps don't jolt the view), ladders, **jump pads** (64 on the map: rooftop launchers that always land you on the roof, plus bounce pads in squares), fall damage (cancelled after a pad launch), BR glide insertion. Speed is hard-capped.
+- **Loot crates:** 120 breakable crates in rooms and on streets. Shoot or blast one open and it pops (with confetti) into a random pickup; crates respawn in arena modes. All crate and pad logic is server-authoritative and predicted on the client.
+- **Look & feel:** toon-shaded bright city, candy-coloured buildings and props, and a fixed night setting (there is no day cycle): a moonlit sky with stars and drifting clouds, cool neutral moonlight bright enough to read the whole street, and lit windows, shop signs, lanterns and street lamps. Hits show floating damage numbers; eliminations burst into confetti.
 - **Combat:** 100 health + up to 100 armor (absorbs first), headshot multipliers, range falloff, bloom/spread, recoil patterns, out-of-combat regeneration in arena modes, 2.2 s spawn protection (cancelled by firing), fair spawn selection (distance and enemy line of sight), and assists within 8 s.
-- **Strategic layer:** power weapons with limited ammo at contested central spots (they drop on death); dynamic *Data Cache* objectives (Overdrive buff + score); kill streaks (3 = team radar sweep, 5 = Overdrive + bounty); bounty shutdowns reward ending streaks (a skill-based comeback); rotating overclocked point in Domination; BR downed/revive (4 s hold, 30 s bleed-out, squad wipe finishes downed players); explosive barrels; electrified water; optional match modifiers (Low Gravity, Headhunter, Overcharge, Glass Cannon, Power Surge, Neon Storm event).
-- **Medals:** First Blood, Double/Triple Kill, Rampage, Headshot, Long Shot, Revenge, Bounty Collected, Demolition, Clutch, Airborne, streaks, Capture, Defender, Revive, Data Heist.
-- **Session-only progression:** three daily-style challenges generated locally from the date, "this session" stats, and per-match improvement feedback. All of it is gone when the tab closes, and the game says so.
+- **Strategic layer:** power weapons with limited ammo at contested central spots (they drop on death); dynamic *Data Cache* objectives (Overdrive buff + score); kill streaks with a HUD meter showing the next reward (3 = team radar sweep, 5 = Overdrive + bounty, 8 = full restock of health, armor and ammo plus a long Overdrive); bounty shutdowns reward ending streaks (a skill-based comeback); rotating overclocked point in Domination; BR downed/revive (4 s hold, 30 s bleed-out, squad wipe finishes downed players); explosive barrels; electrified water; optional match modifiers (Low Gravity, Headhunter, Overcharge, Glass Cannon, Power Surge, Neon Storm event).
+- **Payload:** attackers (team 0) escort a data-core cart along a track through the district; defenders (team 1) stop it. The cart moves while at least one attacker is within 5 m and no defender is (a little faster with more escorts), stalls when contested, and rolls back after 8 s alone, never past the last checkpoint. Attackers start with 3:00; each of the two checkpoints (at ⅓ and ⅔ of the track) adds 60 s. Attackers win on delivery; defenders win when time runs out, with up to 60 s of overtime while attackers are on the cart. Each district's track is derived deterministically by A* on the walkability grid (west end of the central boulevard → A → B → C → east end, restricted to flat cells with room for the cart, then string-pulled) and is unit-tested to never intersect geometry. Attackers spawn behind the cart, defenders ahead of it.
+- **Gun Game:** 12-player free-for-all on a 10-weapon ladder (Arcstorm → Titan Drum → Pulse-9 → Helix-47 → Viper SMG → Breachmaker → Railspike → Longshot-X → Nova Cannon → Phantom pistol). Every elimination instantly swaps you to the next weapon, and the first kill with the final pistol wins. A self-inflicted death knocks you back one weapon. There are no weapon pickups or grenades, so everyone fights with their ladder weapon. The HUD shows your ladder position and the next weapon, and announces when someone reaches the final weapon. Available in Practice and online, with the same bot fill and drop-in as FFA.
+- **Score pop-ups:** every point you earn pops up beside the crosshair ("+100 Elimination", "+25 Headshot", "+50 Double Kill", "+50 Assist"…), with a running combo total and a rising tick sound. Medal values come from one shared table, so the pop-ups always match the server's scoring.
+- **Medals:** First Blood, Double/Triple Kill, Rampage, Headshot, Long Shot, Revenge, **Nemesis** (eliminate the player who has eliminated you 3+ times), **Slide Kill**, Bounty Collected, Demolition, Clutch, Airborne, streaks, Capture, Defender, Revive, Data Heist, Checkpoint Reached, Payload Delivered.
+- **Session-only progression:** XP from every point you score, plus bonuses for winning (+300), finishing a match (+150) and completing a daily challenge (+500). Levels come quickly (600 XP for level 2, then 250 more per level), and each one unlocks something:
+  - **Titles:** Rookie, Brawler, Sharpshooter, Street Legend, Night Owl, Golden Gun, Neon Royalty.
+  - **Weapon camos:** Bubblegum, Mint Chip, Tiger, Arcade, Lava, Galaxy, Gold and an animated Prism. Pick a finish on the main menu; it's applied to your first-person weapon.
+  - **Feedback:** the HUD shows your level bar and pops a toast on level-ups and completed challenges. The results screen shows the XP breakdown, the level bar filling up and everything you unlocked.
+  - **Also kept:** three daily-style challenges generated locally from the date, "this session" stats and per-match improvement feedback.
+
+  All of it lives in memory only and is gone when the tab closes, unless you opt in to *Remember my level, XP and weapon finish* (see Privacy). Challenges and session stats are never saved.
 - **AI:** Rookie/Standard/Veteran/Elite bots with limited FOV and range, hearing, smoke and flash awareness, reaction delays, aim error, strafing, cover-seeking at low health, healing, reloading, grenades, tactical use, objective play, looting, revives and stuck recovery. Bots use the same input pipeline as humans (no cheating) and are always named `BOT …` (humans can't register that prefix).
 - **Accessibility:** key rebinding, toggle crouch/aim, colour-blind team palette, reduce-motion, head bob/camera shake toggles, visual sound cues for gunfire and footsteps, crosshair style/colour/size, HUD scale, clean competitive HUD, FPS/latency display.
 - **Graphics presets:** Low/Medium/High (bloom, rain, shadows, particles, resolution scale). Low is auto-selected on ≤ 4-core machines.
@@ -203,16 +221,18 @@ Ladders: hold forward to climb, jump to kick off.
 
 ## Test results (actually run)
 
-Automated (`npm test`): **49 tests passing.**
+Automated (`npm test`): **77 tests passing.**
 
-- `shared/test` (41): movement (gravity, walk/sprint speeds, no wall tunnelling at 400 m/s, step-up limits, jump height, slide, bounds, determinism), weapons (fire rate, semi/burst/pellets, reload, empty mag, swap delay, falloff, power-weapon ammo, distinct handling), map (determinism, 8 districts, every spawn free of geometry, objectives/pickups present, BR loot), match (bot-filled TDM runs to its score limit; FFA/DOM/BR run to completion; server-side hitscan applies armor-first damage; input flooding can't speed-hack; snapshots serialize under 20 KB), protocol validation and name sanitization.
-- `server/test` (8): health endpoint, name sanitization, invalid room codes, party-size enforcement (solo can't queue Squad without Fill), a two-client private match with synchronized movement and server acks, reconnect with token, labelled AI fill after the wait, disconnection of clients spamming invalid frames, and rejection of a disallowed origin.
+- `shared/test` (63): stairways and jump pads on the real map (no solid geometry, ladder, jump pad, crate or barrel in any of the 450 stair flights' walk space; every flight can be walked and sprinted up and down without snagging or bobbing, and jumped from mid-flight; every outdoor rooftop staircase lets you walk onto the roof; all 64 jump pads launch to full height without hitting anything and land without fall damage), Gun Game (a 10-bot Gun Game always arms each player with exactly their ladder weapon and ends on a final-weapon kill; arenas have no weapon or power pickups), slide-hop (landing with crouch held starts a second slide and keeps clearly more speed than a plain landing), the shared medal-score table, match sizes (online team modes 6v6, FFA 12, BR 24 for every squad size; a full 8v8 bot match fights and runs under 5 ms per tick), play features (double jump; jump pads launch and cancel fall damage; **every rooftop jump pad on the real map lands its rider on the roof without fall damage**; shooting a loot crate breaks it and drops a pickup), payload (every district's track is deterministic and clear of geometry; the cart advances only with uncontested escorts, extends the clock at checkpoints and rolls back to the last one; bot attackers deliver it and win; bot defenders run the clock out and win; a full bot-filled 4v4 reaches an end condition), movement (gravity, walk/sprint speeds, no wall tunnelling at 400 m/s, step-up limits, jump height, slide, bounds, determinism), weapons (fire rate, semi/burst/pellets, reload, empty mag, swap delay, falloff, power-weapon ammo, distinct handling), map (determinism, 8 districts, every spawn free of geometry, objectives/pickups present, BR loot), match (bot-filled TDM runs to its score limit; FFA/DOM/BR run to completion; server-side hitscan applies armor-first damage; input flooding can't speed-hack; snapshots serialize under 20 KB), protocol validation and name sanitization.
+- `client/test` (4): opt-in progress saving (nothing stored by default; only total XP and camo saved when opted in, and the level is restored from them; opting out deletes the saved copy; malformed or out-of-range data is ignored).
+- `server/test` (10): health endpoint, an online Gun Game queue that starts as a full 12-player solo match on the first ladder weapon, name sanitization, invalid room codes, party-size enforcement (solo can't queue a BR Squad without Fill), a solo TDM queue that starts within seconds as a full 6v6 with 11 labelled bots, a second player who drops into that running match in place of a bot, and a bot that takes over their slot when they leave, a two-client private match with synchronized movement and server acks, reconnect with token, labelled AI fill after the wait, disconnection of clients spamming invalid frames, and rejection of a disallowed origin.
 
 Manual browser testing (built-in Chromium pane, Intel HD 530 integrated GPU):
 
 - Boot → menu → Practice TDM: the world renders, movement and sprint (~8.1 m/s) work, and the server acked every input. Weapon swap, reload, frag throw, grenade cycling, tactical cooldown, slide (11.6 m/s) and jump all work. Hits are confirmed by the authority, with assists and the kill feed.
 - Online: an invite link joined a party, a ready check and private TDM put 2 humans on opposite teams with labelled bot fill, and positions synchronized across clients. **Public matchmaking:** two separate solo players queued FFA with AI fill off; the queue showed honest counts and matched them together (2 humans, 0 bots). Player 1 then pathed to player 2 and eliminated them through server-authoritative combat; both clients showed the kill, damage indicators, First Blood and a Data Cache event.
 - Practice Battle Royale (glide insertion, storm, power weapon markers), forced match end → results → Rematch, and online Domination on the **production builds** (`vite preview` + bundled `server/dist`) with zero console errors.
+- Practice Payload in Neon City on both sides (production preview and dev build): the cart, rails, checkpoint gates and escort ring render; the HUD progress bar, minimap and full-map track update; bots push and contest; the match ends on the clock with "Defenders held the line" and the results screen shows how far the payload got. Zero console errors.
 - Performance: ~60 FPS on the Low preset at 1024×768 (≈5 ms CPU per frame), ~30 FPS on Medium with bloom, on that integrated GPU.
 
 Not tested here: the Dockerfile (Docker isn't installed in the dev environment), real deployments to Netlify/Render, Firefox/Safari, load beyond 2 human clients + bots, and high-latency networks.
@@ -221,7 +241,7 @@ Not tested here: the Dockerfile (Docker isn't installed in the dev environment),
 
 ## Known limitations
 
-- **Payload/Extraction mode isn't implemented** and isn't shown in the UI.
+- **Payload:** the cart isn't a physical obstacle (players and bullets pass through it), each district has a single west-to-east track, and there's no Extraction mode.
 - **Capacity is unmeasured.** Rooms tick at 30 Hz and send per-player snapshots (~20–40 KB/s per player, interest-managed at 140 m). A small instance should handle a handful of 8–16-player rooms, but this hasn't been load-tested.
 - **Not cheat-proof:** aim is client-controlled (as in every shooter), so aim-assist or no-recoil cheats aren't prevented. Nearby enemies are sent even without line of sight (no anti-wallhack culling).
 - **High latency:** lag compensation rewinds at most 300 ms; players above ~250 ms ping will see more corrections.

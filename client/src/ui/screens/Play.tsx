@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MODE_INFO } from "@neon/shared";
+import { BR_PLAYERS, MODE_INFO, ONLINE_TEAM_SIZE, isSoloMode } from "@neon/shared";
 import type { PartySize, QueueMode } from "@neon/shared";
 import { go, store, toast, useStore } from "../../state/store";
 import { online } from "../../net/online";
@@ -13,7 +13,7 @@ const SIZES: [PartySize, string][] = [
   [3, "Trio"],
   [4, "Squad"],
 ];
-const MODES: QueueMode[] = ["tdm", "ffa", "dom", "br"];
+const MODES: QueueMode[] = ["tdm", "ffa", "gungame", "dom", "payload", "br"];
 
 /** Online play: party, mode/size selection and honest matchmaking status. */
 export function PlayScreen() {
@@ -59,7 +59,7 @@ export function PlayScreen() {
   const settings = (p: Partial<{ mode: QueueMode; size: PartySize; fill: boolean; bots: boolean }>) => {
     if (!party) return;
     const next = { mode: party.mode, size: party.size, fill: party.fill, bots: party.bots, ...p };
-    if (next.mode === "ffa") next.size = 1;
+    if (isSoloMode(next.mode)) next.size = 1;
     else if (next.size < party.members.length) next.size = party.members.length as PartySize;
     online.send({ t: "party_settings", ...next });
   };
@@ -133,7 +133,7 @@ export function PlayScreen() {
                 <button
                   key={n}
                   className={party?.size === n ? "on" : ""}
-                  disabled={!canEdit || party?.mode === "ffa" || (party && n < party.members.length)}
+                  disabled={!canEdit || isSoloMode(party?.mode ?? "tdm") || (party && n < party.members.length)}
                   onClick={() => settings({ size: n })}
                 >
                   {l}
@@ -141,22 +141,30 @@ export function PlayScreen() {
               ))}
             </div>
             <div className="small muted" style={{ marginTop: 8 }}>
-              {party?.mode === "ffa" ? "Free-for-All is always solo — friends in your party join the same match as rivals." : `Teams of ${party?.size ?? 1}. Your party always stays together.`}
+              {party?.mode === "ffa" || party?.mode === "gungame"
+                ? `${MODE_INFO[party.mode].name}: 12 players, everyone for themselves. Friends in your party join the same match as rivals.`
+                : party?.mode === "br"
+                  ? `Battle Royale: ${BR_PLAYERS} players in squads of ${party?.size ?? 1}. Your party always stays together.`
+                  : `Matches are ${ONLINE_TEAM_SIZE}v${ONLINE_TEAM_SIZE}. Your party always stays together on one team; the rest is filled with other players or labelled AI.`}
             </div>
             <div className="col" style={{ marginTop: 12, gap: 8 }}>
-              <label className="check">
-                <input type="checkbox" disabled={!canEdit} checked={!!party?.fill} onChange={(e) => settings({ fill: e.target.checked })} />
-                Fill squad with other players
-              </label>
-              <div className="small muted" style={{ marginLeft: 26 }}>
-                Off = you'll only be matched as a full {sizeLabel.toLowerCase()} — solo players are never put into a squad unless this is on.
-              </div>
+              {party?.mode === "br" && (
+                <>
+                  <label className="check">
+                    <input type="checkbox" disabled={!canEdit} checked={!!party?.fill} onChange={(e) => settings({ fill: e.target.checked })} />
+                    Fill squad with other players
+                  </label>
+                  <div className="small muted" style={{ marginLeft: 26 }}>
+                    Off = you'll only be matched as a full {sizeLabel.toLowerCase()} — solo players are never put into a squad unless this is on.
+                  </div>
+                </>
+              )}
               <label className="check">
                 <input type="checkbox" disabled={!canEdit} checked={!!party?.bots} onChange={(e) => settings({ bots: e.target.checked })} />
-                Allow AI fill after a short wait
+                Allow AI fill
               </label>
               <div className="small muted" style={{ marginLeft: 26 }}>
-                If not enough people are queuing, empty slots are filled with AI players that are always labelled BOT. Turn off to wait for humans only.
+                If nobody else is online, the match starts in a couple of seconds with AI players (always labelled BOT); otherwise empty slots are filled after a short wait. You may also drop into a running match in place of a bot, and bots take over for anyone who leaves. Turn off to wait for humans only.
               </div>
             </div>
           </div>
@@ -201,7 +209,7 @@ export function PlayScreen() {
                 </div>
                 <div className="col" style={{ marginTop: 12, gap: 6 }}>
                   {party.members.map((m) => (
-                    <div key={m.id} className="row" style={{ padding: "8px 10px", background: "rgba(0,0,0,.3)", border: "1px solid var(--line)" }}>
+                    <div key={m.id} className="row" style={{ padding: "8px 12px", background: "#f3f8ff", borderRadius: 12 }}>
                       <span>{m.leader ? "★" : "•"}</span>
                       <b>{m.name}</b>
                       {m.id === myId && <span className="tag-you">YOU</span>}
@@ -214,8 +222,8 @@ export function PlayScreen() {
                       )}
                     </div>
                   ))}
-                  {Array.from({ length: Math.max(0, Math.min(4, party.mode === "ffa" ? 4 : party.size) - party.members.length) }).map((_, i) => (
-                    <div key={`e${i}`} className="row muted small" style={{ padding: "8px 10px", border: "1px dashed var(--line)" }}>
+                  {Array.from({ length: Math.max(0, Math.min(4, isSoloMode(party.mode) ? 4 : party.size) - party.members.length) }).map((_, i) => (
+                    <div key={`e${i}`} className="row muted small" style={{ padding: "8px 12px", border: "2px dashed var(--line)", borderRadius: 12 }}>
                       Open slot — share the code or link
                     </div>
                   ))}

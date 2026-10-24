@@ -97,12 +97,31 @@ export interface ZoneSnap {
   s: boolean;
   dps: number;
 }
+export interface PayloadSnap {
+  x: number;
+  y: number;
+  z: number;
+  /** Cart heading. */
+  yw: number;
+  /** Progress along the track 0..1. */
+  p: number;
+  /** Checkpoints reached. */
+  r: number;
+  /** 0 idle, 1 advancing, 2 contested, 3 rolling back. */
+  s: number;
+  /** Attackers escorting. */
+  n: number;
+  /** Overtime. */
+  ot: boolean;
+}
 export interface MatchStateSnap {
   ph: "starting" | "live" | "ended";
   tl: number;
   sc: number[];
   cp?: CPSnap[];
   zn?: ZoneSnap;
+  /** Payload cart (payload mode). */
+  pl?: PayloadSnap;
   /** Data cache objective position, if active. */
   dc?: [number, number, number] | null;
   /** Teams/players still alive (battle royale). */
@@ -121,6 +140,8 @@ export interface ScoreRow {
   pl: number;
   /** Connected (false = reconnecting). */
   c: boolean;
+  /** Gun Game: weapon tier (0-based). */
+  gt?: number;
 }
 
 export type GameEvent =
@@ -152,6 +173,8 @@ export interface Snapshot {
   sm: SmokeSnap[];
   pk: PickupSnap[];
   br: number[];
+  /** Broken crate ids. */
+  cr: number[];
   m: MatchStateSnap;
   ev: GameEvent[];
   sb?: ScoreRow[];
@@ -202,7 +225,7 @@ export interface MatchResults {
 // Lobby / party
 // ---------------------------------------------------------------------------
 
-export type QueueMode = "tdm" | "ffa" | "dom" | "br";
+export type QueueMode = "tdm" | "ffa" | "gungame" | "dom" | "payload" | "br";
 
 export interface PartyMember {
   id: number;
@@ -230,6 +253,7 @@ export interface MatchStartInfo {
   roster: RosterEntry[];
   reconnectToken: string;
   barrels: { i: number; x: number; y: number; z: number }[];
+  crates: { i: number; x: number; y: number; z: number }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +299,7 @@ const isInt = (v: unknown): v is number => Number.isInteger(v);
 const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isStr = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
 
-export const QUEUE_MODES: QueueMode[] = ["tdm", "ffa", "dom", "br"];
+export const QUEUE_MODES: QueueMode[] = ["tdm", "ffa", "gungame", "dom", "payload", "br"];
 const DIFFS: Difficulty[] = ["rookie", "standard", "veteran", "elite"];
 
 export function isValidRoomCode(code: unknown): code is string {

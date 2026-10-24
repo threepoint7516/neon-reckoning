@@ -19,7 +19,7 @@ export function LoadoutPicker({ value, onChange, compact = false }: { value: Loa
             <button
               key={id}
               className={`chip ${on ? "on" : ""}`}
-              style={{ cursor: "pointer", borderColor: hex(w.color), background: on ? hex(w.color) : "rgba(0,0,0,.3)", color: on ? "#06040c" : hex(w.color), padding: "6px 10px" }}
+              style={{ cursor: "pointer", borderColor: hex(w.color), background: on ? hex(w.color) : "#fff", color: "#1f2a44", border: `2px solid ${hex(w.color)}`, padding: "6px 12px" }}
               title={`${w.category} — ${w.blurb}`}
               onClick={() => {
                 audio.uiClick();

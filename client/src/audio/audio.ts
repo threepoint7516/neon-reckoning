@@ -311,6 +311,29 @@ export class AudioEngine {
     this.osc(this.sfx, { type: "sine", f0: 500, f1: 1200, dur: 0.6, gain: 0.1, attack: 0.1 });
   }
 
+  /** Jump pad launch: springy "boing". */
+  boing(): void {
+    if (!this.ctx) return;
+    this.osc(this.sfx, { type: "sine", f0: 180, f1: 720, dur: 0.35, gain: 0.35, attack: 0.005 });
+    this.osc(this.sfx, { type: "triangle", f0: 360, f1: 1100, dur: 0.25, gain: 0.12, delay: 0.03 });
+  }
+
+  /** Loot crate cracking open. */
+  crate(pos: Vec): void {
+    if (!this.ctx) return;
+    const dest = this.out(this.sfx, pos, 6);
+    this.noiseBurst(dest, { dur: 0.18, gain: 0.5, type: "bandpass", freq: 900, q: 1.5 });
+    this.noiseBurst(dest, { dur: 0.06, gain: 0.4, type: "highpass", freq: 3000, delay: 0.02 });
+    [880, 1175, 1568].forEach((f, i) => this.osc(dest, { type: "triangle", f0: f, dur: 0.18, gain: 0.08, delay: 0.05 + i * 0.05 }));
+  }
+
+  /** Your elimination: a cheerful confetti pop. */
+  killPop(): void {
+    if (!this.ctx) return;
+    this.noiseBurst(this.ui, { dur: 0.12, gain: 0.35, type: "highpass", freq: 2500 });
+    [784, 988, 1319].forEach((f, i) => this.tone(f, 0.08, 0.15, "square", this.ui, 0.04 + i * 0.04));
+  }
+
   pickup(): void {
     if (!this.ctx) return;
     this.tone(660, 0.12, 0.08, "triangle", this.ui);
@@ -328,6 +351,36 @@ export class AudioEngine {
       good: [523, 659, 784, 1047], bad: [784, 622, 523, 392], neutral: [660, 880], start: [392, 523, 659, 784, 1047], end: [1047, 784, 659, 523, 392, 262],
     };
     seqs[kind]!.forEach((f, i) => this.tone(f, 0.1, 0.25, "sawtooth", this.ui, i * 0.09));
+  }
+
+  /** Level up: rising arpeggio with a sparkle on top. */
+  levelUp(): void {
+    if (!this.ctx) return;
+    [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => this.tone(f, 0.12, 0.3, "triangle", this.ui, i * 0.07));
+    this.tone(2093, 0.08, 0.5, "sine", this.ui, 0.45);
+    this.noiseBurst(this.ui, { dur: 0.4, gain: 0.08, type: "highpass", freq: 6000, delay: 0.42 });
+  }
+
+  /** Gun Game promotion: quick "ka-chunk" plus an upward blip. */
+  promote(final = false): void {
+    if (!this.ctx) return;
+    this.noiseBurst(this.ui, { dur: 0.06, gain: 0.3, type: "bandpass", freq: 1200, q: 2 });
+    this.osc(this.ui, { type: "square", f0: 300, f1: final ? 1200 : 700, dur: 0.18, gain: 0.08, delay: 0.05 });
+    if (final) [880, 1175, 1568].forEach((f, i) => this.tone(f, 0.1, 0.2, "sawtooth", this.ui, 0.2 + i * 0.08));
+  }
+
+  /** Challenge complete: bright two-note chime. */
+  challenge(): void {
+    if (!this.ctx) return;
+    this.tone(1319, 0.12, 0.35, "sine", this.ui);
+    this.tone(1760, 0.12, 0.5, "sine", this.ui, 0.12);
+    this.tone(2637, 0.05, 0.4, "sine", this.ui, 0.24);
+  }
+
+  /** Score pop-up tick; pitch climbs with the running combo. */
+  scoreTick(combo: number): void {
+    if (!this.ctx) return;
+    this.tone(700 + Math.min(combo, 12) * 70, 0.05, 0.06, "triangle", this.ui);
   }
 
   uiHover(): void {
@@ -429,13 +482,13 @@ export class AudioEngine {
   private scheduleMusic(): void {
     const c = this.ctx;
     if (!c) return;
-    const bpm = this.musicMode === "menu" ? 96 : 112;
+    const bpm = this.musicMode === "menu" ? 108 : 124;
     const stepDur = 60 / bpm / 4;
     const chords = [
+      [48, 55, 60, 64], // C
+      [43, 50, 55, 59], // G
       [45, 52, 57, 60], // Am
       [41, 48, 53, 57], // F
-      [43, 50, 55, 59], // G
-      [40, 47, 52, 55], // Em
     ];
     const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
     while (this.nextNoteTime < c.currentTime + 0.12) {

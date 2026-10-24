@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { WEAPONS, GRENADES } from "@neon/shared";
-import type { DeploySnap, PickupSnap, ProjSnap, WeaponId, MatchStateSnap, ZoneSnap } from "@neon/shared";
+import { WEAPONS, GRENADES, trackPoint } from "@neon/shared";
+import type { DeploySnap, PickupSnap, ProjSnap, WeaponId, MatchStateSnap, PayloadSnap, PayloadTrack, ZoneSnap } from "@neon/shared";
 import { textTexture, getTextures } from "./textures";
 
 const PICKUP_COLORS: Record<string, number> = {
@@ -14,10 +14,17 @@ export class EntityView {
   private projs = new Map<number, { obj: THREE.Object3D; target: THREE.Vector3; kind: string }>();
   private deploys = new Map<number, THREE.Object3D>();
   private barrels = new Map<number, THREE.Group>();
+  private crates = new Map<number, THREE.Group>();
   private points: THREE.Group[] = [];
   private zoneWall: THREE.Mesh | null = null;
   private zoneMat: THREE.ShaderMaterial | null = null;
   private cache: THREE.Group;
+  private cart: THREE.Group | null = null;
+  private cartTarget = new THREE.Vector3();
+  private cartYaw = 0;
+  private cartState = 0;
+  private cartMats: { core: THREE.MeshBasicMaterial; glow: THREE.SpriteMaterial; ring: THREE.MeshBasicMaterial; strip: THREE.MeshBasicMaterial } | null = null;
+  private gates: { mat: THREE.MeshBasicMaterial; reached: boolean }[] = [];
   private geos: THREE.BufferGeometry[] = [];
   private mats: THREE.Material[] = [];
   private box = new THREE.BoxGeometry(1, 1, 1);
@@ -39,7 +46,9 @@ export class EntityView {
 
   constructor(
     barrels: { i: number; x: number; y: number; z: number }[],
+    crates: { i: number; x: number; y: number; z: number }[],
     points: { x: number; y: number; z: number }[] | null,
+    track: PayloadTrack | null,
     private myTeam: () => number,
     private friendColor: () => number,
     private enemyColor: () => number,
@@ -68,6 +77,28 @@ export class EntityView {
       g.position.set(b.x, b.y, b.z);
       this.group.add(g);
       this.barrels.set(b.i, g);
+    }
+    // Loot crates: wooden boxes with bright banding — shoot or blast them open.
+    const crateWood = new THREE.MeshToonMaterial({ color: 0xd9a066 });
+    const crateBand = new THREE.MeshToonMaterial({ color: 0xffca3a, emissive: 0xffaa00, emissiveIntensity: 0.25 });
+    this.mats.push(crateWood, crateBand);
+    for (const c of crates) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(this.box, crateWood);
+      body.scale.setScalar(0.9);
+      body.position.y = 0.45;
+      body.castShadow = true;
+      const bandA = new THREE.Mesh(this.box, crateBand);
+      bandA.scale.set(0.94, 0.16, 0.94);
+      bandA.position.y = 0.45;
+      const bandB = new THREE.Mesh(this.box, crateBand);
+      bandB.scale.set(0.16, 0.94, 0.94);
+      bandB.position.y = 0.45;
+      g.add(body, bandA, bandB);
+      g.position.set(c.x, c.y, c.z);
+      g.rotation.y = (c.i * 0.7) % Math.PI;
+      this.group.add(g);
+      this.crates.set(c.i, g);
     }
     if (points) {
       points.forEach((p, i) => {
@@ -112,6 +143,126 @@ export class EntityView {
     this.cache.add(o1, o2, new THREE.Mesh(beamGeo, bm));
     this.cache.visible = false;
     this.group.add(this.cache);
+    if (track) this.buildPayload(track);
+  }
+
+  /** Payload: guide rails along the track, checkpoint gates and the glowing cart. */
+  private buildPayload(track: PayloadTrack): void {
+    const railMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x22e5ff).multiplyScalar(0.9), transparent: true, opacity: 0.55, toneMapped: false });
+    this.mats.push(railMat);
+    for (let i = 1; i < track.pts.length; i++) {
+      const a = track.pts[i - 1]!;
+      const b = track.pts[i]!;
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      if (len < 0.05) continue;
+      const yaw = Math.atan2(b.x - a.x, b.z - a.z);
+      for (const side of [-0.55, 0.55]) {
+        const r = new THREE.Mesh(this.box, railMat);
+        r.scale.set(0.08, 0.05, len + 0.08);
+        r.rotation.y = yaw;
+        r.position.set((a.x + b.x) / 2 + Math.cos(yaw) * side, (a.y + b.y) / 2 + 0.03, (a.z + b.z) / 2 - Math.sin(yaw) * side);
+        this.group.add(r);
+      }
+    }
+    // Checkpoint gates and the delivery beacon.
+    const postGeo = new THREE.BoxGeometry(0.18, 3.2, 0.18);
+    postGeo.translate(0, 1.6, 0);
+    const beamGeo = new THREE.BoxGeometry(3.4, 0.16, 0.16);
+    this.geos.push(postGeo, beamGeo);
+    for (const d of [...track.checkpoints, track.length]) {
+      const p = trackPoint(track, d);
+      const last = d === track.length;
+      const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(last ? 0xff2bd6 : 0x9aa0b4).multiplyScalar(1.6), toneMapped: false });
+      this.mats.push(mat);
+      const g = new THREE.Group();
+      for (const side of [-1.7, 1.7]) {
+        const post = new THREE.Mesh(postGeo, mat);
+        post.position.x = side;
+        g.add(post);
+      }
+      const beam = new THREE.Mesh(beamGeo, mat);
+      beam.position.y = 3.2;
+      g.add(beam);
+      g.position.set(p.x, p.y, p.z);
+      g.rotation.y = p.yaw;
+      this.group.add(g);
+      if (!last) this.gates.push({ mat, reached: false });
+    }
+    // The cart: armoured sled carrying a glowing data core.
+    const cart = new THREE.Group();
+    const hull = new THREE.MeshStandardMaterial({ color: 0x2a2d3a, metalness: 0.85, roughness: 0.35 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x111218, metalness: 0.6, roughness: 0.6 });
+    const strip = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+    const core = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false });
+    const ringM = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, toneMapped: false, depthWrite: false });
+    const glow = new THREE.SpriteMaterial({ map: this.glowTex, color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+    this.mats.push(hull, dark, strip, core, ringM, glow);
+    const add = (m: THREE.Material, s: [number, number, number], pos: [number, number, number], shadow = true) => {
+      const x = new THREE.Mesh(this.box, m);
+      x.scale.set(...s);
+      x.position.set(...pos);
+      x.castShadow = shadow;
+      cart.add(x);
+    };
+    add(hull, [1.3, 0.45, 2.0], [0, 0.55, 0]);
+    add(dark, [1.36, 0.12, 2.06], [0, 0.32, 0]);
+    add(hull, [0.9, 0.25, 0.9], [0, 0.9, 0]);
+    add(strip, [1.32, 0.05, 2.02], [0, 0.72, 0], false);
+    const wheelGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.16, 14);
+    wheelGeo.rotateZ(Math.PI / 2);
+    this.geos.push(wheelGeo);
+    for (const [x, z] of [[-0.62, -0.7], [0.62, -0.7], [-0.62, 0.7], [0.62, 0.7]] as const) {
+      const w = new THREE.Mesh(wheelGeo, dark);
+      w.position.set(x, 0.24, z);
+      cart.add(w);
+    }
+    const octa = new THREE.OctahedronGeometry(0.42);
+    this.geos.push(octa);
+    const c = new THREE.Mesh(octa, core);
+    c.name = "core";
+    c.position.y = 1.45;
+    cart.add(c);
+    const halo = new THREE.Sprite(glow);
+    halo.scale.setScalar(3.2);
+    halo.position.y = 1.45;
+    cart.add(halo);
+    // Escort radius ring (PAYLOAD_RADIUS = 5 m).
+    const ringGeo = new THREE.RingGeometry(4.75, 5, 64);
+    ringGeo.rotateX(-Math.PI / 2);
+    this.geos.push(ringGeo);
+    const ring = new THREE.Mesh(ringGeo, ringM);
+    ring.position.y = 0.05;
+    ring.renderOrder = 5;
+    cart.add(ring);
+    const p0 = trackPoint(track, 0);
+    cart.position.set(p0.x, p0.y, p0.z);
+    cart.rotation.y = p0.yaw;
+    this.cartTarget.copy(cart.position);
+    this.cartYaw = p0.yaw;
+    this.cart = cart;
+    this.cartMats = { core, glow, ring: ringM, strip };
+    this.group.add(cart);
+  }
+
+  private syncPayload(pl: PayloadSnap, colorOf: (team: number) => number): void {
+    if (!this.cart || !this.cartMats) return;
+    this.cartTarget.set(pl.x, pl.y, pl.z);
+    this.cartYaw = pl.yw;
+    this.cartState = pl.s;
+    // Attackers' colour while moving; red when contested, grey when halted.
+    const c = new THREE.Color(colorOf(0));
+    if (pl.s === 2) c.lerp(new THREE.Color(0xff3030), 0.6);
+    else if (pl.s === 0 || pl.s === 3) c.lerp(new THREE.Color(0x9aa0b4), 0.55);
+    this.cartMats.core.color.copy(c).multiplyScalar(2.4);
+    this.cartMats.strip.color.copy(c).multiplyScalar(1.8);
+    this.cartMats.glow.color.copy(c);
+    this.cartMats.ring.color.copy(c).multiplyScalar(1.5);
+    this.gates.forEach((g, i) => {
+      const reached = i < pl.r;
+      if (reached === g.reached) return;
+      g.reached = reached;
+      g.mat.color.set(reached ? colorOf(0) : 0x9aa0b4).multiplyScalar(1.6);
+    });
   }
 
   private makePickup(p: PickupSnap): THREE.Group {
@@ -268,6 +419,11 @@ export class EntityView {
       }
   }
 
+  syncCrates(broken: number[]): void {
+    const set = new Set(broken);
+    for (const [id, g] of this.crates) g.visible = !set.has(id);
+  }
+
   syncBarrels(dead: number[]): void {
     const set = new Set(dead);
     for (const [id, g] of this.barrels) g.visible = !set.has(id);
@@ -290,6 +446,7 @@ export class EntityView {
       this.cache.position.set(m.dc[0], m.dc[1] + 1, m.dc[2]);
     } else this.cache.visible = false;
     if (m.zn) this.syncZone(m.zn);
+    if (m.pl) this.syncPayload(m.pl, colorOf);
   }
 
   private syncZone(z: ZoneSnap): void {
@@ -335,6 +492,18 @@ export class EntityView {
     if (this.cache.visible) this.cache.rotation.y += dt * 2;
     if (this.zoneMat) this.zoneMat.uniforms.uTime!.value = time;
     for (const g of this.points) (g.children[1] as THREE.Mesh).rotation.y += dt;
+    if (this.cart) {
+      this.cart.position.lerp(this.cartTarget, Math.min(1, dt * 8));
+      let d = this.cartYaw - this.cart.rotation.y;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      this.cart.rotation.y += d * Math.min(1, dt * 5);
+      const core = this.cart.getObjectByName("core");
+      if (core) {
+        core.rotation.y += dt * (this.cartState === 1 ? 3 : 0.8);
+        core.position.y = 1.45 + Math.sin(time * 2.4) * 0.08;
+        core.scale.setScalar(this.cartState === 2 ? 0.75 + 0.25 * Math.sin(time * 14) : 1);
+      }
+    }
   }
 
   dispose(): void {

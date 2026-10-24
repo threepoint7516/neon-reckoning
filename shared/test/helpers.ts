@@ -12,7 +12,7 @@ export function box(minX: number, minY: number, minZ: number, maxX: number, maxY
 export function testMap(extra: Box[] = []): MapData {
   return {
     name: "test", minX: -50, minZ: -50, maxX: 50, maxZ: 50,
-    boxes: [box(-50, -1, -50, 50, 0, 50), ...extra], ladders: [], signs: [], lights: [], water: [], districts: [], barrels: [], loot: [], roads: [],
+    boxes: [box(-50, -1, -50, 50, 0, 50), ...extra], ladders: [], signs: [], lights: [], water: [], districts: [], barrels: [], loot: [], roads: [], jumpPads: [], crates: [],
   };
 }
 

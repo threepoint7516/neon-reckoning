@@ -3,6 +3,7 @@
 
 import type { GameEvent, MatchResults } from "@neon/shared";
 import { Rng } from "@neon/shared";
+import { CHALLENGE_XP, FINISH_XP, WIN_XP, progress } from "./progress";
 
 export interface Challenge {
   id: string;
@@ -63,8 +64,29 @@ export const sessionStats = {
   history: [] as MatchSummary[],
 };
 
+const completeListeners = new Set<(c: Challenge) => void>();
+/** Called when a challenge is completed (once per challenge). */
+export function onChallengeComplete(l: (c: Challenge) => void): () => void {
+  completeListeners.add(l);
+  return () => completeListeners.delete(l);
+}
+
+function setProgress(c: Challenge, value: number): void {
+  const was = c.progress;
+  c.progress = Math.min(c.goal, value);
+  if (was < c.goal && c.progress >= c.goal) {
+    progress.add(CHALLENGE_XP, `Challenge: ${c.text}`);
+    for (const l of completeListeners) l(c);
+  }
+}
+
 function bump(id: string, n = 1): void {
-  for (const c of challenges) if (c.id === id) c.progress = Math.min(c.goal, c.progress + n);
+  for (const c of challenges) if (c.id === id) setProgress(c, c.progress + n);
+}
+
+/** Streak challenges complete outright when a streak of at least their goal is reached. */
+function reachStreak(n: number): void {
+  for (const c of challenges) if (c.id === "streak" && c.goal <= n) setProgress(c, c.goal);
 }
 
 /** Feed match events for the local player into challenge progress. */
@@ -75,9 +97,9 @@ export function trackEvent(e: GameEvent, me: number): void {
     if (["frag", "nova", "mine", "remote", "barrel"].includes(e.w)) bump("grenade");
   } else if (e.k === "medal" && e.to === me) {
     if (e.m === "double_kill") bump("multi");
-    if (e.m === "streak_3") for (const c of challenges) if (c.id === "streak" && c.goal <= 3) c.progress = c.goal;
-    if (e.m === "streak_5") for (const c of challenges) if (c.id === "streak" && c.goal <= 5) c.progress = c.goal;
-    if (e.m === "streak_8") for (const c of challenges) if (c.id === "streak") c.progress = c.goal;
+    if (e.m === "streak_3") reachStreak(3);
+    if (e.m === "streak_5") reachStreak(5);
+    if (e.m === "streak_8") reachStreak(99);
     if (e.m === "capture") bump("capture");
     if (e.m === "data_heist") bump("cache");
     if (e.m === "longshot") bump("longshot");
@@ -103,7 +125,9 @@ export function recordResults(r: MatchResults, me: number): { summary: MatchSumm
   sessionStats.deaths += summary.deaths;
   if (won) {
     sessionStats.wins++;
+    progress.add(WIN_XP, "Victory");
     bump("wins");
   }
+  progress.add(FINISH_XP, "Match complete");
   return { summary, previous };
 }

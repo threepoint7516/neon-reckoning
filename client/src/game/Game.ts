@@ -5,26 +5,30 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import {
-  Btn, CROUCH_EYE_HEIGHT, CollisionWorld, EYE_HEIGHT, GRENADES, GRENADE_IDS, INTERP_DELAY, MAX_ARMOR, PF, SIM_DT, TACTICALS, WEAPONS,
-  activeWeapon, clonePlayer, getFrontierMap, rayAABB, stepPlayer, MODE_INFO,
+  Btn, CROUCH_EYE_HEIGHT, CollisionWorld, EYE_HEIGHT, STEP_HEIGHT, GRENADES, GRENADE_IDS, INTERP_DELAY, MAX_ARMOR, NavGrid, PF, SIM_DT, TACTICALS, WEAPONS,
+  activeWeapon, buildPayloadTrack, clonePlayer, getFrontierMap, rayAABB, stepPlayer, MODE_INFO,
+  ASSIST_SCORE, GUN_LADDER, HEADSHOT_BONUS, KILL_SCORE, MEDAL_SCORES, isSoloMode,
 } from "@neon/shared";
 import type {
   GameEvent, Loadout, MatchConfig, MatchResults, MatchStartInfo, MatchStateSnap, PlayerInput, PlayerSnap, PlayerState, RosterEntry,
-  ScoreRow, ServerMessage, SimHooks, Snapshot, StepEnv, WeaponDef, District,
+  ScoreRow, ServerMessage, SimHooks, Snapshot, StepEnv, WeaponDef, District, PayloadTrack,
 } from "@neon/shared";
 import type { Connection } from "../net/connection";
 import { audio } from "../audio/audio";
 import { settingsStore } from "../state/settings";
 import type { Settings } from "../state/settings";
-import { trackEvent } from "../state/session";
+import { onChallengeComplete, trackEvent } from "../state/session";
+import { progress, xpToNext } from "../state/progress";
 import { Input } from "./input";
 import { buildWorld, makeEnvMap } from "./render/world";
+import { DayNight, NIGHT_TOD } from "./render/sky";
+import type { Lighting } from "./render/sky";
 import type { WorldView } from "./render/world";
 import { Effects } from "./render/effects";
 import { EntityView } from "./render/entities";
 import { Avatar } from "./render/avatars";
 import { ViewModel } from "./render/viewmodel";
-import { emptyHud } from "./hud";
+import { MEDAL_NAMES, emptyHud } from "./hud";
 import type { HudData, Marker } from "./hud";
 
 interface Remote {
@@ -84,6 +88,8 @@ export class Game {
   readonly myId: number;
   readonly offline: boolean;
   readonly district: District | null;
+  /** Payload track, derived locally with the same deterministic code as the server. */
+  readonly track: PayloadTrack | null;
   roster = new Map<number, RosterEntry>();
   scores: ScoreRow[] = [];
   match: MatchStateSnap | null = null;
@@ -121,6 +127,10 @@ export class Game {
   private eyeH = EYE_HEIGHT;
   private shake = 0;
   private landDip = 0;
+  /** View offset that eases out stair steps and curbs (see updateCamera). */
+  private stepSmooth = 0;
+  private lastViewY: number | null = null;
+  private wasGrounded = false;
   private timeOffset = 0;
   private haveTime = false;
   private remotes = new Map<number, Remote>();
@@ -142,7 +152,8 @@ export class Game {
   private training: Record<string, boolean> | null = null;
   private trainStart: THREE.Vector3 | null = null;
   private envMap: THREE.Texture;
-  private glowLight: THREE.DirectionalLight;
+  private dayNight: DayNight;
+  private light: Lighting;
   private settingsSnapshot: Settings;
 
   constructor(private canvas: HTMLCanvasElement, private conn: Connection, info: MatchStartInfo, private cb: GameCallbacks) {
@@ -157,7 +168,7 @@ export class Game {
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: s.quality !== "low", powerPreference: "high-performance", stencil: false });
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = s.shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -166,35 +177,26 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(s.fov, 1, 0.05, 1200);
     this.camera.rotation.order = "YXZ";
     this.scene.add(this.camera);
-    this.scene.fog = new THREE.FogExp2(0x120a22, s.quality === "low" ? 0.0075 : 0.0055);
-    this.scene.background = new THREE.Color(0x05040c);
+    this.scene.fog = new THREE.FogExp2(0xc4ecff, 0.0026);
+    this.scene.background = new THREE.Color(0xc4ecff);
     this.envMap = makeEnvMap(this.renderer);
 
-    // Lighting: moonlight + neon-tinted hemisphere.
-    this.scene.add(new THREE.HemisphereLight(0x7a6ac0, 0x2a1830, 1.6));
-    this.scene.add(new THREE.AmbientLight(0x3a3058, 0.9));
-    const moon = new THREE.DirectionalLight(0xa8b8ff, 1.3);
-    moon.position.set(60, 120, -80);
-    moon.castShadow = s.shadows;
-    moon.shadow.mapSize.set(2048, 2048);
-    moon.shadow.camera.left = -60;
-    moon.shadow.camera.right = 60;
-    moon.shadow.camera.top = 60;
-    moon.shadow.camera.bottom = -60;
-    moon.shadow.camera.far = 400;
-    moon.shadow.bias = -0.0005;
-    this.scene.add(moon, moon.target);
-    this.glowLight = moon;
+    // Sun, moon, sky and fog follow a shared day/night clock (match time).
+    this.dayNight = new DayNight(this.scene, s.shadows);
+    this.light = this.dayNight.state;
 
     this.world = buildWorld(map, s.quality, this.envMap, s.shadows, s.rain);
     this.scene.add(this.world.group);
     this.world.setArena(this.district ? { minX: this.district.minX, minZ: this.district.minZ, maxX: this.district.maxX, maxZ: this.district.maxZ } : null);
     this.collision = new CollisionWorld(map);
+    this.track = this.cfg.mode === "payload" && this.district ? buildPayloadTrack(new NavGrid(this.collision, map, this.district), this.collision, this.district) : null;
     this.effects = new Effects(s.quality, s.particles);
     this.scene.add(this.effects.group);
     this.entities = new EntityView(
       info.barrels,
+      info.crates ?? [],
       this.cfg.mode === "dom" && this.district ? this.district.points : null,
+      this.track,
       () => this.myTeam(),
       () => this.friendColor(),
       () => this.enemyColor(),
@@ -216,6 +218,21 @@ export class Game {
 
     this.unsub.push(conn.onMessage((m) => this.onMessage(m)));
     this.unsub.push(settingsStore.subscribe(() => this.applySettings()));
+    // Session progression: level-ups and challenges celebrate mid-match.
+    progress.beginMatch();
+    this.viewmodel.setCamo(progress.camo());
+    this.unsub.push(
+      progress.onLevelUp((level, unlocked) => {
+        this.pushToast(`LEVEL ${level}!`, unlocked.length ? `Unlocked ${unlocked.join(", ")}` : "Keep it up", "levelup");
+        audio.levelUp();
+      }),
+    );
+    this.unsub.push(
+      onChallengeComplete((c) => {
+        this.pushToast("CHALLENGE COMPLETE", `${c.text} · +500 XP`, "challenge");
+        audio.challenge();
+      }),
+    );
     this.applySettings(true);
     if (this.cfg.mode === "training") {
       this.training = { move: false, sprint: false, jump: false, slide: false, ads: false, fire: false, hit: false, reload: false, swap: false, grenade: false, tactical: false, heal: false };
@@ -284,6 +301,7 @@ export class Game {
     this.entities.dispose();
     this.viewmodel.dispose();
     this.envMap.dispose();
+    this.dayNight.dispose();
     this.composer?.dispose();
     this.renderer.dispose();
     audio.stopAmbient();
@@ -318,7 +336,7 @@ export class Game {
         vm.clear = false;
         vm.clearDepth = true;
         c.addPass(vm);
-        c.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), s.quality === "high" ? 0.75 : 0.6, 0.45, 0.82));
+        c.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), s.quality === "high" ? 0.5 : 0.4, 0.4, 0.92));
         this.vignette = new ShaderPass(VignetteShader);
         c.addPass(this.vignette);
         c.addPass(new OutputPass());
@@ -338,13 +356,13 @@ export class Game {
     return this.roster.get(this.myId)?.t ?? 0;
   }
   friendColor(): number {
-    return settingsStore.get().colorblind ? 0x3d8bff : 0x22e5ff;
+    return settingsStore.get().colorblind ? 0x3a86ff : 0x2f9bff;
   }
   enemyColor(): number {
-    return settingsStore.get().colorblind ? 0xff9a1f : 0xff2b4e;
+    return settingsStore.get().colorblind ? 0xffbe0b : 0xff5d3a;
   }
   get isFFA(): boolean {
-    return this.cfg.mode === "ffa" || this.cfg.mode === "training";
+    return isSoloMode(this.cfg.mode);
   }
   colorForTeam(team: number): number {
     if (team === this.myTeam() && !this.isFFA) return this.friendColor();
@@ -449,6 +467,7 @@ export class Game {
     });
     this.entities.syncDeployables(s.dp, this.time);
     this.entities.syncBarrels(s.br);
+    this.entities.syncCrates(s.cr ?? []);
     this.entities.syncMatch(s.m, (t) => this.colorForTeam(t));
     this.effects.syncSmokes(s.sm, nowS);
     for (const e of s.ev) this.onEvent(e);
@@ -550,6 +569,14 @@ export class Game {
           case "dry":
             audio.dry();
             break;
+          case "djump":
+            audio.jump();
+            this.effects.pulse({ x: this.me!.x, y: this.me!.y - 0.2, z: this.me!.z }, 1.6, 0xffffff, 0.35);
+            break;
+          case "pad":
+            audio.boing();
+            this.effects.confetti({ x: this.me!.x, y: this.me!.y + 0.3, z: this.me!.z }, 18);
+            break;
           case "jump":
             audio.jump();
             if (this.training) this.training.jump = true;
@@ -647,6 +674,8 @@ export class Game {
       }
       case "hit":
         h.hit = { t: now, head: e.h, kill: e.x };
+        h.dmgNums.push({ id: this.nextId++, d: e.d, head: e.h, kill: e.x, t: now, dx: (Math.random() - 0.5) * 60 });
+        if (h.dmgNums.length > 8) h.dmgNums.shift();
         audio.hitmarker(e.h, e.x, !!e.sh);
         if (this.training) this.training.hit = true;
         {
@@ -685,9 +714,17 @@ export class Game {
           };
         } else if (e.kr === this.myId) {
           h.killBanner = { name: this.nameOf(e.v), t: now, head: e.h };
+          this.scorePop("Elimination", KILL_SCORE);
+          if (e.h) this.scorePop("Headshot", HEADSHOT_BONUS);
         }
+        if (e.as.includes(this.myId)) this.scorePop("Assist", ASSIST_SCORE);
         const r = this.remotes.get(e.v);
-        if (r) r.flags &= ~PF.ALIVE;
+        if (r) {
+          r.flags &= ~PF.ALIVE;
+          // Celebratory confetti instead of anything gory.
+          this.effects.confetti({ x: r.pos.x, y: r.pos.y + 1.2, z: r.pos.z }, e.kr === this.myId ? 60 : 30);
+          if (e.kr === this.myId) audio.killPop();
+        }
         break;
       }
       case "down":
@@ -702,7 +739,11 @@ export class Game {
         const p = { x: e.x, y: e.y, z: e.z };
         const me = this.me;
         const dist = me ? Math.hypot(me.x - e.x, me.y - e.y, me.z - e.z) : 50;
-        if (e.t === "smoke") audio.pop(p, "smoke");
+        if (e.t === "crate") {
+          this.effects.confetti(p, 28);
+          this.effects.impact(p, { x: 0, y: 1, z: 0 }, 0xd9a066, false);
+          audio.crate(p);
+        } else if (e.t === "smoke") audio.pop(p, "smoke");
         else if (e.t === "flash") {
           audio.pop(p, "flash");
           this.effects.explosion(p, 1.5, 0xffffff);
@@ -722,11 +763,20 @@ export class Game {
         h.flash = Math.max(h.flash, e.s);
         audio.muffleFor(GRENADES.flash.duration * e.s, e.s);
         break;
-      case "medal":
+      case "medal": {
+        if (e.m === "promoted" || e.m === "final_tier") {
+          // Gun Game: the new weapon is the celebration.
+          audio.promote(e.m === "final_tier");
+          if (e.m === "final_tier") this.pushBanner("FINAL WEAPON — one more kill wins", "streak");
+          break;
+        }
         h.medals.push({ id: this.nextId++, m: e.m, t: now });
-        if (h.medals.length > 4) h.medals.shift();
+        if (h.medals.length > 3) h.medals.shift();
         audio.medal();
+        const pts = MEDAL_SCORES[e.m] ?? 0;
+        if (pts > 0) this.scorePop(MEDAL_NAMES[e.m] ?? e.m, pts);
         break;
+      }
       case "ann":
         this.pushBanner(e.t, e.c);
         audio.alert(e.c === "warn" || e.c === "storm" ? "bad" : e.c === "start" ? "start" : e.c === "end" ? "end" : e.c === "objective" || e.c === "streak" ? "good" : "neutral");
@@ -751,7 +801,24 @@ export class Game {
 
   private pushBanner(text: string, kind: string): void {
     this.hud.banners.push({ id: this.nextId++, text, kind, t: this.time });
-    if (this.hud.banners.length > 3) this.hud.banners.shift();
+    if (this.hud.banners.length > 2) this.hud.banners.shift();
+  }
+
+  private pushToast(title: string, text: string, kind: "levelup" | "challenge"): void {
+    this.hud.toasts.push({ id: this.nextId++, title, text, kind, t: this.time });
+    if (this.hud.toasts.length > 2) this.hud.toasts.shift();
+  }
+
+  /** Adds a "+N label" pop-up, grows the combo counter and earns session XP. */
+  private scorePop(text: string, pts: number): void {
+    const h = this.hud;
+    if (this.cfg.mode === "training") return;
+    h.scorePops.push({ id: this.nextId++, text, pts, t: this.time });
+    if (h.scorePops.length > 5) h.scorePops.shift();
+    if (this.time - h.combo.t > 3) h.combo = { pts: 0, n: 0, t: this.time };
+    h.combo = { pts: h.combo.pts + pts, n: h.combo.n + 1, t: this.time };
+    audio.scoreTick(h.combo.n);
+    progress.add(pts);
   }
 
   private pushMsg(text: string): void {
@@ -814,11 +881,10 @@ export class Game {
 
     this.updateRemotes(dt);
     this.updateCamera(dt, mdx, mdy);
-    this.world.update(this.time, this.camera.position);
+    this.light = this.dayNight.update(NIGHT_TOD, this.time, this.camera.position, this.scene, this.renderer);
+    this.world.update(this.time, this.camera.position, this.light);
     this.effects.update(dt);
     this.entities.update(dt, this.time, (p, kind) => this.effects.trail(p, kind === "nova" ? 0xff2bd6 : 0xffffff));
-    this.glowLight.position.set(this.camera.position.x + 60, 120, this.camera.position.z - 80);
-    this.glowLight.target.position.set(this.camera.position.x, 0, this.camera.position.z);
 
     if (this.time - this.lastAmbient > 14) {
       this.lastAmbient = this.time;
@@ -957,9 +1023,18 @@ export class Game {
       const z = this.prevPos.z + (me.z - this.prevPos.z) * alpha + this.smoothErr.z;
       const target = me.downed ? 0.6 : me.crouched ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
       this.eyeH += (target - this.eyeH) * Math.min(1, dt * 14);
+      // Step smoothing: a stair step or curb moves the body up to 0.55 m in a single
+      // tick; ease the view through it instead of snapping (only while grounded).
+      if (me.onGround && this.wasGrounded && this.lastViewY !== null) {
+        const dy = y - this.lastViewY;
+        if (Math.abs(dy) > 0.01 && Math.abs(dy) <= STEP_HEIGHT + 0.05) this.stepSmooth -= dy;
+      }
+      this.stepSmooth = Math.max(-0.6, Math.min(0.6, this.stepSmooth * Math.exp(-dt * 20)));
+      this.lastViewY = y;
+      this.wasGrounded = me.onGround;
       const speed = Math.hypot(me.vx, me.vz);
       const bob = s.headBob && !s.reduceMotion && me.onGround ? Math.sin(this.time * (me.sprinting ? 14 : 10)) * 0.035 * Math.min(1, speed / 6) * (1 - me.ads) : 0;
-      cam.position.set(x, y + this.eyeH + bob - this.landDip, z);
+      cam.position.set(x, y + this.eyeH + bob - this.landDip + this.stepSmooth, z);
       const def = activeWeapon(me);
       fov = s.fov * (1 + ((def?.adsZoom ?? 1) - 1) * me.ads) * (me.sprinting ? 1.05 : 1) * (me.slideT > 0 ? 1.08 : 1);
       const sh = s.cameraShake && !s.reduceMotion ? this.shake : 0;
@@ -1031,8 +1106,16 @@ export class Game {
     h.feed = h.feed.filter((f) => t - f.t < 7);
     h.banners = h.banners.filter((b) => t - b.t < 4);
     h.medals = h.medals.filter((m) => t - m.t < 2.6);
+    h.scorePops = h.scorePops.filter((p) => t - p.t < 2.2);
+    h.toasts = h.toasts.filter((x) => t - x.t < 5);
+    {
+      const pr = progress.get();
+      h.level = { level: pr.level, k: pr.into / xpToNext(pr.level) };
+    }
     h.msgs = h.msgs.filter((m) => t - m.t < 3);
     h.damageDirs = h.damageDirs.filter((d) => t - d.t < 1.4);
+    h.dmgNums = h.dmgNums.filter((d) => t - d.t < 0.9);
+    h.night = this.light.night;
     h.soundCues = h.soundCues.filter((d) => t - d.t < 1.0);
     h.flash = Math.max(0, h.flash - dt / GRENADES.flash.duration);
     h.hurtFlash = this.hurt;
@@ -1065,6 +1148,8 @@ export class Game {
         color: sl ? hexStr(WEAPONS[sl.id].color) : "#555",
         ammo: sl ? `${sl.mag}/${sl.reserve}` : "",
       }));
+      // Gun Game carries a single ladder weapon.
+      if (this.cfg.mode === "gungame") h.slots = h.slots.slice(0, 1);
       const g = GRENADES[me.nadeSel];
       h.grenade = { name: g.name, count: me.nades[me.nadeSel], color: hexStr(g.color), all: GRENADE_IDS.map((id) => ({ id, n: me.nades[id] })) };
       const tac = TACTICALS[me.tactical];
@@ -1092,17 +1177,39 @@ export class Game {
       h.storm = m.storm ?? 0;
       const myTeam = this.myTeam();
       if (this.isFFA) {
-        const rows = [...this.scores].sort((a, b) => b.k - a.k);
+        const gg = this.cfg.mode === "gungame";
+        // Gun Game ranks by ladder tier (shown 1-based), FFA by eliminations.
+        const val = (r: ScoreRow) => (gg ? (r.gt ?? 0) + 1 : r.k);
+        const rows = [...this.scores].sort((a, b) => val(b) - val(a) || b.k - a.k);
         const mine = rows.find((r) => r.i === this.myId);
         const lead = rows[0];
         h.scoreLine = [
-          { label: "YOU", value: mine?.k ?? 0, color: hexStr(this.friendColor()), mine: true },
-          { label: lead && lead.i !== this.myId ? this.nameOf(lead.i) : "LEADER", value: lead?.k ?? 0, color: hexStr(this.enemyColor()), mine: false },
+          { label: "YOU", value: mine ? val(mine) : 0, color: hexStr(this.friendColor()), mine: true },
+          { label: lead && lead.i !== this.myId ? this.nameOf(lead.i) : "LEADER", value: lead ? val(lead) : 0, color: hexStr(this.enemyColor()), mine: false },
         ];
-      } else if (this.cfg.mode !== "br") {
+        if (gg) {
+          // Your own tier comes straight from your (predicted) weapon; score rows lag a little.
+          const w = me?.slots[0]?.id;
+          const tier = Math.max(0, w ? GUN_LADDER.indexOf(w) : mine?.gt ?? 0);
+          const next = GUN_LADDER[tier + 1];
+          const others = rows.filter((r) => r.i !== this.myId);
+          const top = others[0];
+          h.gunGame = { tier, total: GUN_LADDER.length, next: next ? WEAPONS[next].name : null, leader: top ? val(top) : 0 };
+          h.scoreLine[0]!.value = tier + 1;
+          h.scoreLine[1] = { label: top ? this.nameOf(top.i) : "LEADER", value: top ? val(top) : 0, color: hexStr(this.enemyColor()), mine: false };
+        }
+      } else if (this.cfg.mode !== "br" && this.cfg.mode !== "payload") {
         h.scoreLine = m.sc.map((v, i) => ({ label: i === myTeam ? "ALLIES" : "ENEMY", value: v, color: hexStr(this.colorForTeam(i)), mine: i === myTeam }));
       } else h.scoreLine = [];
       h.points = (m.cp ?? []).map((cp, i) => ({ label: "ABC"[i]!, owner: cp.o, prog: cp.p, contested: cp.c, oc: cp.oc, color: cp.o >= 0 ? hexStr(this.colorForTeam(cp.o)) : "#9aa0b4" }));
+      const tr = this.track;
+      h.payload =
+        m.pl && tr
+          ? {
+              progress: m.pl.p, checkpoints: tr.checkpoints.map((c) => c / tr.length), reached: m.pl.r, state: m.pl.s, escorts: m.pl.n,
+              attacking: myTeam === 0, overtime: m.pl.ot, color: hexStr(this.colorForTeam(0)),
+            }
+          : null;
       if (m.zn && me) h.zone = { next: m.zn.n, shrinking: m.zn.s, alive: m.al ?? 0, outside: Math.hypot(me.x - m.zn.x, me.z - m.zn.z) > m.zn.r, dps: m.zn.dps };
       else h.zone = null;
     }
@@ -1166,6 +1273,7 @@ export class Game {
       this.district.points.forEach((p, i) => out.push({ x: p.x, z: p.z, kind: "point", label: "ABC"[i], color: this.hud.points[i]?.color ?? "#fff" }));
     const m = this.match;
     if (m?.dc) out.push({ x: m.dc[0], z: m.dc[2], kind: "cache", color: "#ffe14a", label: "CACHE" });
+    if (m?.pl) out.push({ x: m.pl.x, z: m.pl.z, kind: "payload", color: hexStr(this.colorForTeam(0)), label: "PAYLOAD" });
     for (const p of this.lastPickups) if (p.k === "power") out.push({ x: p.x, z: p.z, kind: "power", color: "#ff2bd6", label: p.w ? WEAPONS[p.w as keyof typeof WEAPONS]?.name : "POWER" });
     return out;
   }

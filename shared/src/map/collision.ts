@@ -1,5 +1,5 @@
 import type { AABB, Vec3 } from "../math";
-import type { Box, Ladder, MapData } from "./types";
+import type { Box, JumpPad, Ladder, MapData } from "./types";
 import { BoxFlag } from "./types";
 
 export interface RayHit {
@@ -21,6 +21,7 @@ const GRID_OFFSET = 512; // allows negative coordinates down to -4096m
 export class CollisionWorld {
   readonly boxes: Box[];
   readonly ladders: Ladder[];
+  readonly pads: JumpPad[];
   private grid = new Map<number, number[]>();
   private stamp: Uint32Array;
   private stampId = 1;
@@ -28,6 +29,7 @@ export class CollisionWorld {
   constructor(map: MapData) {
     this.boxes = map.boxes.filter((b) => !(b.flags & BoxFlag.DECOR));
     this.ladders = map.ladders;
+    this.pads = map.jumpPads ?? [];
     this.stamp = new Uint32Array(this.boxes.length);
     this.boxes.forEach((b, i) => {
       const x0 = Math.floor(b.minX / CELL);
@@ -225,6 +227,13 @@ export class CollisionWorld {
       tmax = Math.min(tmax, Math.max(t1, t2));
     }
     return tmax;
+  }
+
+  padAt(a: AABB): JumpPad | null {
+    for (const l of this.pads) {
+      if (a.minX < l.maxX && a.maxX > l.minX && a.minY < l.maxY && a.maxY > l.minY && a.minZ < l.maxZ && a.maxZ > l.minZ) return l;
+    }
+    return null;
   }
 
   ladderAt(a: AABB): Ladder | null {

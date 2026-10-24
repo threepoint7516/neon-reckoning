@@ -14,7 +14,7 @@ export type WeaponId =
 
 export type GrenadeId = "frag" | "smoke" | "flash" | "emp";
 export type TacticalId = "recon" | "shield" | "mine" | "remote";
-export type ModeId = "tdm" | "ffa" | "dom" | "br" | "training";
+export type ModeId = "tdm" | "ffa" | "gungame" | "dom" | "payload" | "br" | "training";
 export type DistrictId =
   | "neon_city"
   | "rusthaven"

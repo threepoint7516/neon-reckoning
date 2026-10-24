@@ -57,16 +57,16 @@ export interface Settings {
 
 export const PRESETS: Record<Quality, Partial<Settings>> = {
   low: { quality: "low", resolutionScale: 0.75, bloom: false, rain: false, shadows: false, particles: "low" },
-  medium: { quality: "medium", resolutionScale: 1, bloom: true, rain: true, shadows: false, particles: "medium" },
-  high: { quality: "high", resolutionScale: 1, bloom: true, rain: true, shadows: true, particles: "high" },
+  medium: { quality: "medium", resolutionScale: 1, bloom: true, rain: false, shadows: false, particles: "medium" },
+  high: { quality: "high", resolutionScale: 1, bloom: true, rain: false, shadows: true, particles: "high" },
 };
 
 const DEFAULTS: Settings = {
   sensitivity: 1, adsSensitivity: 0.75, invertY: false, fov: 92, crouchToggle: false, adsToggle: false,
-  quality: "medium", resolutionScale: 1, bloom: true, rain: true, shadows: false, particles: "medium", showFps: true,
+  quality: "medium", resolutionScale: 1, bloom: true, rain: false, shadows: false, particles: "medium", showFps: true,
   masterVol: 0.8, musicVol: 0.45, sfxVol: 0.9, ambientVol: 0.5, uiVol: 0.6,
   headBob: true, cameraShake: true, reduceMotion: false, colorblind: false,
-  crosshairStyle: "cross", crosshairColor: "#3dfcff", crosshairSize: 1, hudScale: 1, competitiveHud: false, visualSoundCues: true,
+  crosshairStyle: "cross", crosshairColor: "#ffffff", crosshairSize: 1, hudScale: 1, competitiveHud: false, visualSoundCues: true,
   binds: structuredClone(DEFAULT_BINDS), remember: false, tutorialSeen: false,
 };
 

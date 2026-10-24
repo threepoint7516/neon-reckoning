@@ -1,15 +1,17 @@
-import { MapBuilder, FLOOR_H } from "./builder";
+import { CANDY, MapBuilder, FLOOR_H, TRIM, mix } from "./builder";
+import type { Side } from "./builder";
 import { CollisionWorld } from "./collision";
+import { overlaps, stairVolumes } from "./stairs";
 import { BoxFlag, Mat } from "./types";
-import type { District, MapData, PickupSpot } from "./types";
+import type { MapData, MatId, PickupSpot } from "./types";
 import type { DistrictId } from "../types";
 import { Rng } from "../rng";
-import { PLAYER_HEIGHT, PLAYER_RADIUS } from "../constants";
+import { GRAVITY, PLAYER_HEIGHT, PLAYER_RADIUS } from "../constants";
 import type { Vec3 } from "../math";
 
 /*
- * NEON FRONTIER — a 384 m × 384 m region laid out as a 3×3 grid of 128 m
- * cells separated by streets. Eight districts plus the electrified bay:
+ * NEON FRONTIER — a sunny 384 m × 384 m region laid out as a 3×3 grid of
+ * 128 m cells separated by streets. Eight districts plus the bay:
  *
  *   [ The Outlands ]  [ Sector Zero ]  [ Skyrail Station ]
  *   [ Rusthaven    ]  [ Neon City   ]  [ Blacklight Mkt  ]
@@ -21,16 +23,15 @@ import type { Vec3 } from "../math";
 
 export const REGION = 192;
 export const CELL_SIZE = 128;
-const HALF = 58; // half-size of a district's buildable interior
 
-const NEON = {
-  cyan: 0x22e5ff, magenta: 0xff2bd6, violet: 0x9b5cff, green: 0x7dff3a, orange: 0xff8a1f, red: 0xff3b5c, yellow: 0xffe14a, white: 0xe8f0ff,
+const BRIGHT = {
+  sky: 0x4cc9f0, pink: 0xff70a6, purple: 0xb388ff, green: 0x5ee35e, orange: 0xff9f1c, red: 0xff595e, yellow: 0xffca3a, white: 0xffffff,
 };
-const NEON_LIST = Object.values(NEON);
+const ACCENTS = Object.values(BRIGHT);
 
 const SIGN_WORDS = [
-  "KAIJU COLA", "NOODLE 24", "HOTEL ORBIT", "VOIDNET", "LUCKY 8", "CYBER CLINIC", "ARCADE", "SYNTH BAR", "RAMEN", "DATA DEN",
-  "OPEN 25H", "HYPERDRIVE", "NEURO+", "CHROME", "PULSE FM", "GLITCH", "OMNI-MART", "ZETA", "DREAMWARE", "NIGHT OWL",
+  "SODA POP", "NOODLES", "HOTEL SUNNY", "PIXEL CAFE", "LUCKY 8", "BUBBLE TEA", "ARCADE", "TACO TOWN", "RAMEN", "COMICS",
+  "OPEN", "DONUTS", "GELATO", "BAKERY", "FLOWERS", "GAMES", "PIZZA", "BOOKS", "JUICE BAR", "SURF SHOP",
 ];
 
 interface Cell {
@@ -52,14 +53,14 @@ const CELLS: Cell[] = [
 ];
 
 const META: Record<DistrictId, { name: string; tagline: string; accent: number }> = {
-  neon_city: { name: "Neon City", tagline: "High-rise canyons, alleys and skybridges", accent: NEON.magenta },
-  rusthaven: { name: "Rusthaven", tagline: "Factories, warehouses and scrapyards", accent: NEON.orange },
-  eclipse_harbor: { name: "Eclipse Harbor", tagline: "Container stacks, cranes and electrified water", accent: NEON.cyan },
-  sector_zero: { name: "Sector Zero", tagline: "Abandoned research labs and an underground complex", accent: NEON.green },
-  chrome_valley: { name: "Chrome Valley", tagline: "Elevated highway, tunnel and wrecked convoys", accent: NEON.yellow },
-  outlands: { name: "The Outlands", tagline: "Open ridges, comms towers and remote settlements", accent: NEON.violet },
-  blacklight: { name: "Blacklight Market", tagline: "Narrow market lanes built for ambushes", accent: NEON.red },
-  skyrail: { name: "Skyrail Station", tagline: "Elevated platforms, trains and a grand concourse", accent: NEON.white },
+  neon_city: { name: "Neon City", tagline: "Downtown blocks, towers, rooftops and skybridges", accent: BRIGHT.pink },
+  rusthaven: { name: "Rusthaven", tagline: "Brick workshops, warehouse halls and a smokestack foundry", accent: BRIGHT.orange },
+  eclipse_harbor: { name: "Eclipse Harbor", tagline: "Harbour streets, a container maze, piers and a cargo ship", accent: BRIGHT.sky },
+  sector_zero: { name: "Sector Zero", tagline: "Lab blocks around a sunken underground laboratory", accent: BRIGHT.green },
+  chrome_valley: { name: "Chrome Valley", tagline: "Diners, motels and garages under an elevated highway", accent: BRIGHT.yellow },
+  outlands: { name: "The Outlands", tagline: "A tight old-town village around a giant radio tower", accent: BRIGHT.purple },
+  blacklight: { name: "Blacklight Market", tagline: "Lantern-lit market lanes full of shops and stalls", accent: BRIGHT.red },
+  skyrail: { name: "Skyrail Station", tagline: "City blocks under an elevated railway and a grand concourse", accent: BRIGHT.white },
 };
 
 export const DISTRICT_IDS = Object.keys(META) as DistrictId[];
@@ -73,33 +74,28 @@ export function getFrontierMap(): MapData {
   return cached;
 }
 
+const ROAD = 0x6b7280;
+const SIDEWALK = 0xdcd6c8;
+
 export function generateFrontier(): MapData {
   const b = new MapBuilder(1337);
 
   // Ground per cell (bay & harbor water handled separately).
   for (const c of CELLS) {
     if (c.id === "bay") continue;
-    const groundMat = c.id === "outlands" ? Mat.DIRT : c.id === "rusthaven" || c.id === "sector_zero" ? Mat.CONCRETE : Mat.ASPHALT;
-    const groundColor = c.id === "outlands" ? 0x5a4e6a : 0x4a4858;
+    const groundMat = c.id === "rusthaven" || c.id === "sector_zero" || c.id === "eclipse_harbor" || c.id === "chrome_valley" ? Mat.ASPHALT : Mat.TILE;
+    const groundColor =
+      c.id === "outlands" ? 0xbfae92 : c.id === "blacklight" ? 0xc2a98f : c.id === "neon_city" || c.id === "skyrail" ? 0x8f97a8 : 0x8a92a0;
     const x0 = c.cx - CELL_SIZE / 2;
     const z0 = c.cz - CELL_SIZE / 2;
     const x1 = c.cx + CELL_SIZE / 2;
     const z1 = c.cz + CELL_SIZE / 2;
     if (c.id === "eclipse_harbor") {
       b.box(x0, -1, z0, x1 - 34, 0, z1 - 22, groundMat, groundColor);
-      b.box(x1 - 34, -1, z0, x1, 0, z0 + 18, groundMat, groundColor); // north quay connects to Blacklight road
+      b.box(x1 - 34, -1, z0, x1, 0, z0 + 18, groundMat, groundColor);
     } else if (c.id === "sector_zero") {
       // Leave a pit for the underground lab (see sectorZero()).
-      b.slab(x0, z0, x1, z1, -1, 0, groundMat, groundColor, [c.cx - 18, c.cz + 6, c.cx + 18, c.cz + 30]);
-    } else if (c.id === "chrome_valley") {
-      // Dry canal trench running north-south.
-      b.box(x0, -1, z0, c.cx + 20, 0, z1, groundMat, groundColor);
-      b.box(c.cx + 28, -1, z0, x1, 0, z1, groundMat, groundColor);
-      b.box(c.cx + 20, -4, z0, c.cx + 28, -3, z1, Mat.CONCRETE, 0x30303a);
-      b.box(c.cx + 20, -3, z0, c.cx + 20.4, 0, z1, Mat.CONCRETE, 0x30303a);
-      b.box(c.cx + 27.6, -3, z0, c.cx + 28, 0, z1, Mat.CONCRETE, 0x30303a);
-      b.box(c.cx + 20, -4, z0, c.cx + 28, 0, z0 + 0.4, Mat.CONCRETE, 0x30303a);
-      b.box(c.cx + 20, -4, z1 - 0.4, c.cx + 28, 0, z1, Mat.CONCRETE, 0x30303a);
+      b.slab(x0, z0, x1, z1, -1, 0, groundMat, groundColor, [c.cx - 18, c.cz + 6, c.cx + 18, c.cz + 26]);
     } else {
       b.box(x0, -1, z0, x1, 0, z1, groundMat, groundColor);
     }
@@ -110,35 +106,48 @@ export function generateFrontier(): MapData {
   b.water.push({ minX: 30, minZ: 82, maxX: 64, maxZ: REGION, level: -1.4 });
   b.water.push({ minX: -64, minZ: 170, maxX: 30, maxZ: REGION, level: -1.4 });
 
-  // Street network (decor surface strips; collision comes from the ground).
+  // Street network: asphalt with white dashes, sidewalks, trees and lamps.
   const roadY = 0.02;
   for (const off of [-64, 64]) {
-    b.decor(off - 6, 0, -REGION, off + 6, roadY, off === 64 ? 64 : REGION, Mat.ASPHALT, 0x16161d);
-    b.roads.push({ minX: off - 6, minZ: -REGION, maxX: off + 6, maxZ: off === 64 ? 64 : REGION });
-    b.decor(-REGION, 0, off - 6, off === 64 ? 30 : REGION, roadY, off + 6, Mat.ASPHALT, 0x16161d);
-    b.roads.push({ minX: -REGION, minZ: off - 6, maxX: off === 64 ? 30 : REGION, maxZ: off + 6 });
-    // Lane markings.
-    for (let u = -REGION + 4; u < REGION - 4; u += 9) {
-      if (!(off === 64 && u > 60)) b.decor(off - 0.12, roadY, u, off + 0.12, roadY + 0.01, u + 4, Mat.NEON, 0xb8a040);
-      if (!(off === 64 && u > 26)) b.decor(u, roadY, off - 0.12, u + 4, roadY + 0.01, off + 0.12, Mat.NEON, 0xb8a040);
+    const zEnd = off === 64 ? 64 : REGION;
+    const xEnd = off === 64 ? 30 : REGION;
+    b.decor(off - 6, 0, -REGION, off + 6, roadY, zEnd, Mat.ASPHALT, ROAD);
+    b.roads.push({ minX: off - 6, minZ: -REGION, maxX: off + 6, maxZ: zEnd });
+    b.decor(-REGION, 0, off - 6, xEnd, roadY, off + 6, Mat.ASPHALT, ROAD);
+    b.roads.push({ minX: -REGION, minZ: off - 6, maxX: xEnd, maxZ: off + 6 });
+    for (let u = -REGION + 4; u < REGION - 4; u += 8) {
+      if (!(off === 64 && u > 60)) b.decor(off - 0.12, roadY, u, off + 0.12, roadY + 0.01, u + 4, Mat.PAINT, 0xffffff);
+      if (!(off === 64 && u > 26)) b.decor(u, roadY, off - 0.12, u + 4, roadY + 0.01, off + 0.12, Mat.PAINT, 0xffffff);
+    }
+    // Zebra crossings at the intersections.
+    for (const cross of [-64, 64]) {
+      if (off === 64 && cross === 64) continue;
+      for (let k = -5; k <= 5; k += 1.4) {
+        b.decor(off + k - 0.35, roadY, cross - 7.5, off + k + 0.35, roadY + 0.012, cross - 6.2, Mat.PAINT, 0xffffff);
+        b.decor(cross - 7.5, roadY, off + k - 0.35, cross - 6.2, roadY + 0.012, off + k + 0.35, Mat.PAINT, 0xffffff);
+      }
     }
   }
-  // Street lamps along the main roads.
+  // Street lamps and trees along the main roads.
   for (let u = -180; u <= 180; u += 24) {
     for (const off of [-64, 64]) {
-      if (!(off === 64 && u > 56)) b.lamp(off + 6.6, u, NEON_LIST[(u / 24 + 8) % NEON_LIST.length]!, 6.5);
-      if (!(off === 64 && u > 24)) b.lamp(u, off - 6.6, NEON_LIST[(u / 24 + 11) % NEON_LIST.length]!, 6.5);
+      if (!(off === 64 && u > 56)) {
+        b.lamp(off + 6.6, u, 0xffd59a, 6.5);
+        if (Math.abs(u + 12) < 176 && Math.abs(u + 12 - off) > 10) b.tree(off - 6.8, u + 12, 0.9);
+      }
+      if (!(off === 64 && u > 24)) {
+        b.lamp(u, off - 6.6, 0xffd59a, 6.5);
+        if (Math.abs(u + 12) < 176 && Math.abs(u + 12 - off) > 10 && !(off === 64 && u + 12 > 24)) b.tree(u + 12, off + 6.8, 0.9);
+      }
     }
   }
 
-  // Region boundary energy walls.
+  // Region boundary force fields.
   const W = 60;
-  b.box(-REGION - 2, -10, -REGION - 2, REGION + 2, W, -REGION, Mat.NEON, 0x22e5ff);
-  b.box(-REGION - 2, -10, REGION, REGION + 2, W, REGION + 2, Mat.NEON, 0x22e5ff);
-  b.box(-REGION - 2, -10, -REGION, -REGION, W, REGION, Mat.NEON, 0x22e5ff);
-  b.box(REGION, -10, -REGION, REGION + 2, W, REGION, Mat.NEON, 0x22e5ff);
-  // Mark them so the renderer draws them as barrier fields.
-  for (let i = b.boxes.length - 4; i < b.boxes.length; i++) b.boxes[i]!.mat = Mat.BARRIER;
+  b.box(-REGION - 2, -10, -REGION - 2, REGION + 2, W, -REGION, Mat.BARRIER, 0x7bdff2);
+  b.box(-REGION - 2, -10, REGION, REGION + 2, W, REGION + 2, Mat.BARRIER, 0x7bdff2);
+  b.box(-REGION - 2, -10, -REGION, -REGION, W, REGION, Mat.BARRIER, 0x7bdff2);
+  b.box(REGION, -10, -REGION, REGION + 2, W, REGION, Mat.BARRIER, 0x7bdff2);
 
   const gens: Record<DistrictId, (b: MapBuilder, cx: number, cz: number, rng: Rng) => void> = {
     neon_city: neonCity,
@@ -151,29 +160,36 @@ export function generateFrontier(): MapData {
     skyrail,
   };
 
-  const spotRanges: Partial<Record<DistrictId, [number, number]>> = {};
+  const ranges: Partial<Record<DistrictId, { spots: [number, number]; roofs: [number, number]; crates: [number, number] }>> = {};
   for (const c of CELLS) {
     if (c.id === "bay") continue;
-    const before = b.spots.length;
+    const s0 = b.spots.length;
+    const r0 = b.roofs.length;
+    const c0 = b.lootCrates.length;
     b.rng = new Rng(hashId(c.id));
     gens[c.id](b, c.cx, c.cz, b.rng);
-    spotRanges[c.id] = [before, b.spots.length];
+    ranges[c.id] = { spots: [s0, b.spots.length], roofs: [r0, b.roofs.length], crates: [c0, b.lootCrates.length] };
   }
   bay(b);
+  b.clearStairways();
 
   const map: MapData = {
     name: "Neon Frontier",
     minX: -REGION, minZ: -REGION, maxX: REGION, maxZ: REGION,
     boxes: b.boxes, ladders: b.ladders, signs: b.signs, lights: b.lights, water: b.water,
-    districts: [], barrels: b.barrels, loot: [], roads: b.roads,
+    districts: [], barrels: b.barrels, loot: [], roads: b.roads, jumpPads: b.jumpPads, crates: [], stairs: b.stairRuns,
   };
 
-  // Placement pass: spawns, objectives and pickups are derived from the real
-  // collision geometry so nothing ever spawns inside a wall.
+  // Placement pass: pads, crates, spawns, objectives and pickups are derived
+  // from the real collision geometry so nothing ever lands inside a wall.
   const world = new CollisionWorld(map);
+  // Entities (barrels, crates) and jump pads never go on a stairway either.
+  const stairVols = b.stairRuns.flatMap(stairVolumes);
+  const onStairs = (x: number, y: number, z: number, r: number) =>
+    stairVols.some((v) => overlaps({ minX: x - r, maxX: x + r, minY: y, maxY: y + 1.2, minZ: z - r, maxZ: z + r }, v));
   map.barrels = map.barrels.flatMap((p) => {
     const y = world.groundHeight(p.x, p.z, p.y + 1.5);
-    if (!isFinite(y) || Math.abs(y - p.y) > 0.7) return [];
+    if (!isFinite(y) || Math.abs(y - p.y) > 0.7 || onStairs(p.x, y, p.z, 0.5)) return [];
     const free = !world.overlaps({ minX: p.x - 0.4, maxX: p.x + 0.4, minY: y + 0.05, maxY: y + 1.2, minZ: p.z - 0.4, maxZ: p.z + 0.4 });
     return free ? [{ x: p.x, y, z: p.z }] : [];
   });
@@ -185,16 +201,30 @@ export function generateFrontier(): MapData {
     const maxX = c.cx + CELL_SIZE / 2 - 1;
     const minZ = c.cz - CELL_SIZE / 2 + 1;
     const maxZ = c.cz + CELL_SIZE / 2 - 1;
-    const ground = sampleOpenGround(world, map, minX + 3, minZ + 3, maxX - 3, maxZ - 3, 3.5);
+    const r = ranges[c.id]!;
+    const ground0 = sampleOpenGround(world, map, minX + 3, minZ + 3, maxX - 3, maxZ - 3, 3.5);
+    placeJumpPads(b, world, map, b.roofs.slice(r.roofs[0], r.roofs[1]), ground0, rng, c.cx, c.cz, (x, y, z) => onStairs(x, y, z, 1.3));
+    const nearPad = (p: Vec3) => b.jumpPads.some((j) => p.x > j.minX - 2 && p.x < j.maxX + 2 && p.z > j.minZ - 2 && p.z < j.maxZ + 2 && Math.abs(p.y - j.minY) < 2);
+    const ground = ground0.filter((p) => !nearPad(p));
     const spawns = farthestPoints(ground, 18, rng);
     const points = [
       nearestOpen(ground, { x: c.cx - 34, y: 0, z: c.cz }),
       nearestOpen(ground, { x: c.cx, y: 0, z: c.cz }),
       nearestOpen(ground, { x: c.cx + 34, y: 0, z: c.cz }),
     ];
-    const [s0, s1] = spotRanges[c.id]!;
-    const spots = b.spots.slice(s0, s1).filter((p) => isFree(world, p));
+    const spots = b.spots.slice(r.spots[0], r.spots[1]).filter((p) => isFree(world, p) && !nearPad(p));
     const pickups = placePickups(ground, spots, points, rng, c.cx, c.cz);
+    // Loot crates: explicitly placed ones plus a scatter in rooms and on streets.
+    const wanted = [...b.lootCrates.slice(r.crates[0], r.crates[1]), ...pickRandom(spots, 6, rng), ...pickRandom(ground, 6, rng)];
+    for (const p of wanted) {
+      const q = { x: p.x + 0.9, y: p.y, z: p.z + 0.9 };
+      const y = world.groundHeight(q.x, q.z, q.y + 1.2);
+      if (!isFinite(y) || Math.abs(y - q.y) > 0.6 || nearPad(q) || onStairs(q.x, y, q.z, 0.5)) continue;
+      if (world.overlaps({ minX: q.x - 0.5, maxX: q.x + 0.5, minY: y + 0.05, maxY: y + 1, minZ: q.z - 0.5, maxZ: q.z + 0.5 })) continue;
+      if (pickups.some((pk) => Math.hypot(pk.pos.x - q.x, pk.pos.z - q.z) < 1.5 && Math.abs(pk.pos.y - y) < 2)) continue;
+      if (spawns.some((sp) => Math.hypot(sp.x - q.x, sp.z - q.z) < 1.5)) continue;
+      map.crates.push({ x: q.x, y, z: q.z });
+    }
     map.districts.push({
       id: c.id, name: meta.name, tagline: meta.tagline, accent: meta.accent,
       minX, minZ, maxX, maxZ, spawns, pickups, points,
@@ -205,6 +235,71 @@ export function generateFrontier(): MapData {
     for (const g of farthestPoints(ground, 14, rng)) map.loot.push(g);
   }
   return map;
+}
+
+/**
+ * Jump pads: rooftop launchers beside buildings (land on the roof) plus a
+ * couple of vertical "bounce" pads in open squares for vantage and fun.
+ */
+function placeJumpPads(
+  b: MapBuilder, world: CollisionWorld, map: MapData, roofs: MapBuilder["roofs"], ground: Vec3[], rng: Rng, cx: number, cz: number,
+  onStairs: (x: number, y: number, z: number) => boolean,
+): void {
+  const pads: Vec3[] = [];
+  const clear = (x: number, z: number, h: number): number | null => {
+    const y = world.groundHeight(x, z, 2);
+    if (!isFinite(y) || y < -0.1 || y > 0.6 || inWater(map, x, z) || onStairs(x, y, z)) return null;
+    if (world.overlaps({ minX: x - 1.1, maxX: x + 1.1, minY: y + 0.05, maxY: y + h, minZ: z - 1.1, maxZ: z + 1.1 })) return null;
+    if (pads.some((p) => Math.hypot(p.x - x, p.z - z) < 12)) return null;
+    return y;
+  };
+  const order = [...roofs].sort(() => rng.next() - 0.5);
+  let n = 0;
+  for (const r of order) {
+    if (n >= 6) break;
+    if (r.y > 16) continue;
+    const w = r.x1 - r.x0;
+    const d = r.z1 - r.z0;
+    const sides: [number, number, number, number, number][] = [
+      // x, z, dirX, dirZ, roof depth along launch
+      [(r.x0 + r.x1) / 2, r.z1 + 2.4, 0, -1, d],
+      [(r.x0 + r.x1) / 2, r.z0 - 2.4, 0, 1, d],
+      [r.x1 + 2.4, (r.z0 + r.z1) / 2, -1, 0, w],
+      [r.x0 - 2.4, (r.z0 + r.z1) / 2, 1, 0, w],
+    ];
+    for (const [x, z, dx, dz, depth] of sides.sort(() => rng.next() - 0.5)) {
+      if (depth < 8) continue;
+      const y = clear(x, z, r.y + 4);
+      if (y === null) continue;
+      // Apex 2.8 m above the roof; the body's leading edge (2 m away) reaches the
+      // wall at 85% of the climb — well above the parapet — then lands just inside.
+      const vy = Math.sqrt(2 * GRAVITY * (r.y - y + 2.8));
+      const hs = 2.0 / (0.85 * (vy / GRAVITY));
+      b.jumpPad(x, z, y, dx * hs, vy, dz * hs);
+      pads.push({ x, y, z });
+      n++;
+      break;
+    }
+  }
+  // Bounce pads near the centre of the district.
+  const central = [...ground].sort((p, q) => Math.hypot(p.x - cx, p.z - cz) - Math.hypot(q.x - cx, q.z - cz));
+  let bounces = 0;
+  for (const g of central) {
+    if (bounces >= 2) break;
+    if (Math.hypot(g.x - cx, g.z - cz) < 10) continue;
+    const y = clear(g.x, g.z, 9);
+    if (y === null) continue;
+    const toC = Math.atan2(cz - g.z, cx - g.x);
+    b.jumpPad(g.x, g.z, y, Math.cos(toC) * 1.5, 15, Math.sin(toC) * 1.5);
+    pads.push({ x: g.x, y, z: g.z });
+    bounces++;
+  }
+}
+
+function pickRandom<T>(arr: T[], n: number, rng: Rng): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < n && arr.length; i++) out.push(arr[rng.int(0, arr.length - 1)]!);
+  return out;
 }
 
 function hashId(s: string): number {
@@ -298,545 +393,667 @@ function placePickups(ground: Vec3[], spots: Vec3[], points: Vec3[], rng: Rng, c
 }
 
 // ---------------------------------------------------------------------------
-// District generators. Each fills roughly [cx±58, cz±58].
+// Shared helpers
 // ---------------------------------------------------------------------------
 
-function neonCity(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Central plaza with the Holo-Spire landmark.
-  b.block(cx, cz, 7, 7, 64, Mat.FACADE, 0x1c1830);
-  b.neonRect(cx - 3.5, cz - 3.5, cx + 3.5, cz + 3.5, 64, NEON.magenta, 0.2);
-  for (let y = 8; y < 64; y += 8) b.neonRect(cx - 3.55, cz - 3.55, cx + 3.55, cz + 3.55, y, y % 16 ? NEON.cyan : NEON.magenta, 0.06);
-  b.sign(cx, 22, cz + 3.6, 5.6, 9, 2, NEON.magenta, "HOLO-SPIRE", "holo");
-  b.sign(cx, 22, cz - 3.6, 5.6, 9, 3, NEON.cyan, "NEON CITY", "holo");
-  b.light(cx, 66, cz, NEON.magenta, 2);
-  // Plaza cover: planters, kiosks, benches.
-  for (const [dx, dz] of [[-12, -12], [12, -12], [-12, 12], [12, 12]] as const) {
-    b.block(cx + dx, cz + dz, 5, 1.6, 1.1, Mat.CONCRETE, 0x3d3b4f);
-    b.decor(cx + dx - 2.4, 1.1, cz + dz - 0.7, cx + dx + 2.4, 1.15, cz + dz + 0.7, Mat.NEON, NEON.green);
-    b.block(cx + dx * 0.55, cz + dz * 1.45, 2.4, 2.4, 2.6, Mat.PANEL, 0x2a2f45);
-    b.sign(cx + dx * 0.55, 2.9, cz + dz * 1.45 + 1.25 * Math.sign(dz), 2.2, 0.6, dz > 0 ? 2 : 3, NEON_LIST[(dx + dz + 40) % 8]!, rng.pick(SIGN_WORDS));
-  }
-  for (const [dx, dz] of [[0, -16], [0, 16], [-16, 0], [16, 0]] as const) b.block(cx + dx, cz + dz, dz ? 3.5 : 0.8, dz ? 0.8 : 3.5, 1.0, Mat.CONCRETE, 0x4a4860);
-  b.spot(cx + 8, 0.05, cz - 6);
-  b.spot(cx - 7, 0.05, cz + 8);
+function shopSign(b: MapBuilder, rng: Rng, x: number, y: number, z: number, w: number, face: number): void {
+  b.sign(x, y, z, w, 1.1, face, rng.pick(ACCENTS), rng.pick(SIGN_WORDS));
+}
 
-  // Blocks on a 4×4 lattice, skipping the central plaza.
-  const lat = [-44, -20, 20, 44];
-  const interiors: { x: number; z: number; w: number; d: number; floors: number }[] = [];
-  for (const ux of lat)
-    for (const uz of lat) {
-      if (Math.abs(ux) === 20 && Math.abs(uz) === 20) continue;
-      const bx = cx + ux;
-      const bz = cz + uz;
-      const kind = rng.next();
-      const color = rng.pick([0x262a3d, 0x2f2540, 0x1f2b38, 0x33283a]);
-      const neon = rng.pick(NEON_LIST);
-      if (kind < 0.45) {
-        const floors = rng.int(2, 3);
-        const w = 14;
-        const d = 12;
-        b.building(bx - w / 2, bz - d / 2, w, d, {
-          floors, color, neon, doors: [ux < 0 ? "e" : "w", uz < 0 ? "s" : "n"], sign: rng.pick(SIGN_WORDS),
-        });
-        interiors.push({ x: bx, z: bz, w, d, floors });
-      } else if (kind < 0.8) {
-        const h = rng.int(18, 38);
-        b.tower(bx, bz, 13, 13, h, color, neon, rng.pick(SIGN_WORDS));
-        // Low annex with ladder to its roof: a sniper perch.
-        const ax = bx + (ux < 0 ? 6.5 + 2.5 : -6.5 - 2.5);
-        b.block(ax, bz, 5, 8, 5, Mat.CONCRETE, 0x30344a);
-        b.ladder(ax, bz + 4, 0, 5, "s");
-        b.box(ax - 2.5, 5, bz - 4, ax + 2.5, 6, bz - 3.8, Mat.CONCRETE, 0x30344a);
-        b.spot(ax, 5.05, bz);
+function bright(rng: Rng): number {
+  return rng.pick(CANDY);
+}
+
+// ---------------------------------------------------------------------------
+// Dense city grid (Krunker-style): every district is a 4×4 grid of 23 m
+// blocks packed with buildings, separated by 7 m streets. Blocks are split
+// into lots by 2 m alleys; enterable buildings get rooms and roof access,
+// neighbouring roofs are linked by bridges across alleys and streets.
+// ---------------------------------------------------------------------------
+
+const BLOCK = 23;
+const HALF_BLOCK = BLOCK / 2;
+const STREET = 7;
+const BLOCK_U = [-45, -15, 15, 45];
+const STREET_U = [-30, 0, 30];
+
+interface Theme {
+  palette: number[];
+  mats: MatId[];
+  floors: [number, number];
+  /** Chance a lot is an enterable building (otherwise a solid block). */
+  enterable: number;
+  /** Chance a solid block is a tall tower. */
+  tower: number;
+  courtyard: number;
+  hall: number;
+  signs: string[];
+  roofCaps?: boolean;
+}
+
+interface Lot {
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  floors: number;
+  enterable: boolean;
+}
+
+interface GridOpts {
+  rows?: number[];
+  cols?: number[];
+  /** Return true when the block was built by the district itself. */
+  special?: (i: number, j: number, x0: number, z0: number, x1: number, z1: number) => boolean;
+}
+
+const pickSide = (rng: Rng, sides: Side[]) => sides[rng.int(0, sides.length - 1)]!;
+const opposite: Record<Side, Side> = { n: "s", s: "n", e: "w", w: "e" };
+
+/** Places one building on a lot; doors open toward the given (street) sides. */
+function lot(b: MapBuilder, rng: Rng, t: Theme, x0: number, z0: number, w: number, d: number, doors: Side[], lots: Lot[]): void {
+  const floors = rng.int(t.floors[0], t.floors[1]);
+  const color = rng.pick(t.palette);
+  const mat = rng.pick(t.mats);
+  const enterable = w >= 9 && d >= 9 && rng.next() < t.enterable;
+  if (enterable) {
+    const free = (["n", "s", "e", "w"] as Side[]).filter((s) => !doors.includes(s));
+    b.building(x0, z0, w, d, {
+      floors, color, mat, doors, neon: rng.pick(ACCENTS),
+      sign: rng.chance(0.55) ? rng.pick(t.signs) : undefined,
+      rooms: rng.chance(0.6),
+      outsideStairs: floors >= 2 && free.length && rng.chance(0.2) ? pickSide(rng, free) : undefined,
+      parapet: t.roofCaps ? 0.6 : 1,
+    });
+    if (t.roofCaps) b.decor(x0 - 0.2, floors * FLOOR_H + 0.6, z0 - 0.2, x0 + w + 0.2, floors * FLOOR_H + 1.0, z0 + d + 0.2, Mat.PAINT, mix(color, 0x8b3a3a, 0.55));
+    lots.push({ x0, z0, x1: x0 + w, z1: z0 + d, floors, enterable: true });
+    return;
+  }
+  // Solid block: flat roof with a low parapet, rooftop clutter, neon trim and a sign.
+  const tall = rng.chance(t.tower);
+  const h = floors * FLOOR_H + (tall ? rng.int(8, 22) : 0);
+  b.box(x0, 0, z0, x0 + w, h, z0 + d, mat === Mat.PAINT || mat === Mat.WOOD ? Mat.FACADE : mat, color);
+  const p = 0.25;
+  b.box(x0, h, z0, x0 + w, h + 0.6, z0 + p, Mat.PAINT, TRIM);
+  b.box(x0, h, z0 + d - p, x0 + w, h + 0.6, z0 + d, Mat.PAINT, TRIM);
+  b.box(x0, h, z0 + p, x0 + p, h + 0.6, z0 + d - p, Mat.PAINT, TRIM);
+  b.box(x0 + w - p, h, z0 + p, x0 + w, h + 0.6, z0 + d - p, Mat.PAINT, TRIM);
+  b.block(x0 + w * 0.3, z0 + d * 0.35, 1.8, 1.4, 1.2, Mat.METAL, 0xdddddd, h);
+  if (rng.chance(0.4)) b.block(x0 + w * 0.7, z0 + d * 0.65, 2, 2, 2.2, Mat.WOOD, 0x8b5a3c, h);
+  b.neonRect(x0, z0, x0 + w, z0 + d, h + 0.6, rng.pick(ACCENTS), 0.08);
+  if (rng.chance(0.6)) {
+    const s = doors[0] ?? "s";
+    const y = Math.min(3.4, h - 1);
+    if (s === "s") b.sign(x0 + w / 2, y, z0 + d + 0.06, Math.min(w * 0.7, 7), 1.2, 2, rng.pick(ACCENTS), rng.pick(t.signs));
+    else if (s === "n") b.sign(x0 + w / 2, y, z0 - 0.06, Math.min(w * 0.7, 7), 1.2, 3, rng.pick(ACCENTS), rng.pick(t.signs));
+    else if (s === "e") b.sign(x0 + w + 0.06, y, z0 + d / 2, Math.min(d * 0.7, 7), 1.2, 0, rng.pick(ACCENTS), rng.pick(t.signs));
+    else b.sign(x0 - 0.06, y, z0 + d / 2, Math.min(d * 0.7, 7), 1.2, 1, rng.pick(ACCENTS), rng.pick(t.signs));
+  }
+  if (tall && rng.chance(0.5)) b.sign(x0 + w + 0.08, h * 0.6, z0 + d / 2, 1.6, Math.min(h * 0.45, 9), 0, rng.pick(ACCENTS), rng.pick(t.signs), "strip");
+  // Low roofs can be reached by jump pads and ladders.
+  if (h <= 16) {
+    b.roofs.push({ x0, z0, x1: x0 + w, z1: z0 + d, y: h });
+    b.spot(x0 + w / 2, h + 0.05, z0 + d / 2);
+    if (rng.chance(0.3)) {
+      const s = doors[0] ?? "s";
+      if (s === "s") b.ladder(x0 + w * 0.8, z0 + d, 0, h, "s");
+      else if (s === "n") b.ladder(x0 + w * 0.8, z0, 0, h, "n");
+      else if (s === "e") b.ladder(x0 + w, z0 + d * 0.8, 0, h, "e");
+      else b.ladder(x0, z0 + d * 0.8, 0, h, "w");
+    }
+  }
+  lots.push({ x0, z0, x1: x0 + w, z1: z0 + d, floors, enterable: false });
+}
+
+/** Roof-level plank bridge with rails between two roofs at height y. */
+function bridge(b: MapBuilder, x0: number, z0: number, x1: number, z1: number, y: number, alongX: boolean): void {
+  // Optional link: dropped if it would cut through someone's stairway.
+  b.yielding(() => {
+    b.box(x0, y - 0.3, z0, x1, y, z1, Mat.WOOD, 0xd9a066);
+    if (alongX) {
+      b.box(x0, y, z0, x1, y + 0.9, z0 + 0.1, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+      b.box(x0, y, z1 - 0.1, x1, y + 0.9, z1, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+    } else {
+      b.box(x0, y, z0, x0 + 0.1, y + 0.9, z1, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+      b.box(x1 - 0.1, y, z0, x1, y + 0.9, z1, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+    }
+    b.decor(x0, y - 0.32, z0, x1, y - 0.3, z1, Mat.NEON, 0xffd56b);
+  });
+}
+
+/** Fills one block (W×D, normally 23×23) with buildings using a random layout. */
+function fillBlock(b: MapBuilder, rng: Rng, t: Theme, x0: number, z0: number, W: number, D: number): Lot[] {
+  const lots: Lot[] = [];
+  const x1 = x0 + W;
+  const z1 = z0 + D;
+  const Ax = (W - 2) / 2; // lot sizes in the quad layout (2 m alleys)
+  const Az = (D - 2) / 2;
+  const r = rng.next();
+  if (r < t.hall) {
+    // One big hall/warehouse: open interior with cover.
+    const floors = rng.int(1, 2);
+    b.building(x0, z0, W, D, { floors, color: rng.pick(t.palette), mat: rng.pick(t.mats), doors: ["n", "s", rng.chance(0.5) ? "e" : "w"], rooms: false, sign: rng.pick(t.signs) });
+    for (let k = 0; k < 6; k++) b.crate(x0 + 3 + rng.range(0, W - 6), z0 + 6 + rng.range(0, D - 10), rng.range(1, 1.6), 0, rng.pick(CANDY));
+    b.block(x0 + W * 0.65, z0 + D * 0.55, 3, 3, 2.2, Mat.METAL, 0x80cbe8);
+    b.lootCrate(x0 + W * 0.35, z0 + D * 0.7);
+    lots.push({ x0, z0, x1, z1, floors, enterable: true });
+  } else if (r < t.hall + t.courtyard) {
+    // L-shaped buildings around a small courtyard (parking, cover).
+    const flipX = rng.chance(0.5);
+    const flipZ = rng.chance(0.5);
+    const bx = flipX ? x1 - 9 : x0;
+    const bz = flipZ ? z1 - 9 : z0;
+    lot(b, rng, t, x0, bz, W, 9, [flipZ ? "s" : "n", "e", "w"], lots);
+    const wz0 = flipZ ? z0 : z0 + 11;
+    lot(b, rng, t, bx, wz0, 9, D - 11, [flipX ? "e" : "w", flipZ ? "n" : "s"], lots);
+    const cxm = (flipX ? x0 : x0 + 11) + (W - 11) / 2;
+    const czm = (flipZ ? z0 : z0 + 11) + (D - 11) / 2;
+    b.car(cxm - 2.5, czm, false, rng.pick(CANDY));
+    if (rng.chance(0.6)) b.car(cxm + 2.5, czm + 1, false, rng.pick(CANDY));
+    b.block(cxm + (flipX ? 4 : -4), czm + (flipZ ? 4 : -4), 1.8, 1.1, 1.3, Mat.PAINT, 0x3a9b5c);
+    b.lootCrate(cxm, czm - 3.5);
+    b.spot(cxm, 0.05, czm + 3);
+  } else if (r < 0.55) {
+    // Two long slabs with an alley between them.
+    if (rng.chance(0.5)) {
+      lot(b, rng, t, x0, z0, W, Az, ["n", rng.chance(0.4) ? "s" : "e"], lots);
+      lot(b, rng, t, x0, z0 + Az + 2, W, Az, ["s", rng.chance(0.4) ? "n" : "w"], lots);
+      const a = lots[lots.length - 2]!;
+      const c = lots[lots.length - 1]!;
+      if (a.enterable && c.enterable && a.floors === c.floors && rng.chance(0.7)) bridge(b, x0 + W / 2 - 1.2, z0 + Az, x0 + W / 2 + 1.2, z0 + Az + 2, a.floors * FLOOR_H, false);
+    } else {
+      lot(b, rng, t, x0, z0, Ax, D, ["w", rng.chance(0.4) ? "e" : "n"], lots);
+      lot(b, rng, t, x0 + Ax + 2, z0, Ax, D, ["e", rng.chance(0.4) ? "w" : "s"], lots);
+      const a = lots[lots.length - 2]!;
+      const c = lots[lots.length - 1]!;
+      if (a.enterable && c.enterable && a.floors === c.floors && rng.chance(0.7)) bridge(b, x0 + Ax, z0 + D / 2 - 1.2, x0 + Ax + 2, z0 + D / 2 + 1.2, a.floors * FLOOR_H, true);
+    }
+    b.lootCrate(x0 + W / 2, z0 + D / 2);
+  } else {
+    // Four lots around a cross of alleys.
+    const corners: [number, number, Side[]][] = [
+      [x0, z0, ["n", "w"]],
+      [x0 + Ax + 2, z0, ["n", "e"]],
+      [x0, z0 + Az + 2, ["s", "w"]],
+      [x0 + Ax + 2, z0 + Az + 2, ["s", "e"]],
+    ];
+    for (const [lx, lz, ds] of corners) lot(b, rng, t, lx, lz, Ax, Az, rng.chance(0.25) ? [...ds, opposite[ds[0]!]] : ds, lots);
+    const [nw, ne, sw, se] = lots.slice(-4) as [Lot, Lot, Lot, Lot];
+    const link = (p: Lot, q: Lot, f: () => void) => {
+      if (p.enterable && q.enterable && p.floors === q.floors && rng.chance(0.7)) f();
+    };
+    link(nw, ne, () => bridge(b, x0 + Ax, z0 + 4, x0 + Ax + 2, z0 + 6.5, nw.floors * FLOOR_H, true));
+    link(sw, se, () => bridge(b, x0 + Ax, z0 + Az + 6, x0 + Ax + 2, z0 + Az + 8.5, sw.floors * FLOOR_H, true));
+    link(nw, sw, () => bridge(b, x0 + 4, z0 + Az, x0 + 6.5, z0 + Az + 2, nw.floors * FLOOR_H, false));
+    link(ne, se, () => bridge(b, x0 + Ax + 6, z0 + Az, x0 + Ax + 8.5, z0 + Az + 2, ne.floors * FLOOR_H, false));
+    // Alley clutter: dumpster, crates.
+    b.block(x0 + Ax + 1, z0 + 3, 1.2, 1.8, 1.3, Mat.PAINT, 0x3a9b5c);
+    b.crate(x0 + 3, z0 + Az + 1, 0.9, 0, rng.pick(CANDY));
+    b.lootCrate(x0 + Ax + 1, z1 - 3);
+  }
+  return lots;
+}
+
+/** Sidewalks, parked cars, lamps and street cover along one street segment. */
+function dressStreet(b: MapBuilder, rng: Rng, axis: "x" | "z", c: number, from: number, to: number, cross: [number, number][], width = STREET): void {
+  const half = width / 2;
+  // Wide boulevards keep a clear centre lane: props hug the curbs.
+  const curb = width > STREET ? half - 2.1 : 0;
+  // Sidewalk strips along both block faces, interrupted at intersections.
+  const cuts = cross.map(([k, h]) => [k - h, k + h] as const).sort((p, q) => p[0] - q[0]);
+  let u0 = from;
+  for (const [a, z] of [...cuts, [to, to] as const]) {
+    const u1 = Math.min(a, to);
+    if (u1 - u0 > 0.5) {
+      if (axis === "z") {
+        b.sidewalk(c - half, u0, c - half + 1.2, u1);
+        b.sidewalk(c + half - 1.2, u0, c + half, u1);
       } else {
-        // Alley block: two narrow solid buildings with a dumpster alley.
-        b.block(bx - 4.5, bz, 6, 14, rng.int(9, 16), Mat.FACADE, color);
-        b.block(bx + 4.5, bz, 6, 14, rng.int(9, 16), Mat.FACADE, color);
-        b.block(bx, bz - 3, 1.6, 2.6, 1.4, Mat.METAL, 0x2c4a3a);
-        b.crate(bx + 0.6, bz + 3, 1.1);
-        b.sign(bx - 1.45, 4, bz, 0.8, 3.5, 0, neon, rng.pick(SIGN_WORDS), "strip");
-        b.light(bx, 3, bz, neon, 0.6);
-        b.barrel(bx - 0.6, bz + 5);
+        b.sidewalk(u0, c - half, u1, c - half + 1.2);
+        b.sidewalk(u0, c + half - 1.2, u1, c + half);
       }
     }
-  // Skybridges between neighbouring interior buildings at matching heights.
-  for (let i = 0; i < interiors.length; i++)
-    for (let j = i + 1; j < interiors.length; j++) {
-      const p = interiors[i]!;
-      const q = interiors[j]!;
-      const fl = Math.min(p.floors, q.floors);
-      const y = fl * FLOOR_H;
-      if (p.z === q.z && Math.abs(p.x - q.x) === 24) {
-        const xa = Math.min(p.x, q.x) + p.w / 2;
-        const xb = Math.max(p.x, q.x) - q.w / 2;
-        b.box(xa, y - 0.3, p.z - 1.5, xb, y, p.z + 1.5, Mat.METAL, 0x3a4058);
-        b.box(xa, y, p.z - 1.55, xb, y + 1.0, p.z - 1.4, Mat.GLASS, 0x6080a0);
-        b.box(xa, y, p.z + 1.4, xb, y + 1.0, p.z + 1.55, Mat.GLASS, 0x6080a0);
-        b.decor(xa, y - 0.35, p.z - 1.5, xb, y - 0.3, p.z + 1.5, Mat.NEON, NEON.cyan);
-        // Cut a doorway through each parapet: parapets are 1m so players jump over (cover stays).
-      } else if (p.x === q.x && Math.abs(p.z - q.z) === 24) {
-        const za = Math.min(p.z, q.z) + p.d / 2;
-        const zb = Math.max(p.z, q.z) - q.d / 2;
-        b.box(p.x - 1.5, y - 0.3, za, p.x + 1.5, y, zb, Mat.METAL, 0x3a4058);
-        b.box(p.x - 1.55, y, za, p.x - 1.4, y + 1.0, zb, Mat.GLASS, 0x6080a0);
-        b.box(p.x + 1.4, y, za, p.x + 1.55, y + 1.0, zb, Mat.GLASS, 0x6080a0);
-        b.decor(p.x - 1.5, y - 0.35, za, p.x + 1.5, y - 0.3, zb, Mat.NEON, NEON.magenta);
+    u0 = Math.max(u0, z);
+  }
+  for (let u = from + 2; u < to - 2; u += 2) {
+    if (axis === "z") b.decor(c - 0.08, 0.02, u, c + 0.08, 0.03, u + 1, Mat.PAINT, 0xffffff);
+    else b.decor(u, 0.02, c - 0.08, u + 1, 0.03, c + 0.08, Mat.PAINT, 0xffffff);
+  }
+  const nearCross = (u: number) => cross.some(([k, h]) => Math.abs(u - k) < h + 1.5);
+  let side = rng.chance(0.5) ? 1 : -1;
+  for (let u = from + 4; u < to - 3; u += rng.range(6, 11)) {
+    if (nearCross(u)) continue;
+    const at = (o: number): [number, number] => (axis === "z" ? [c + o, u] : [u, c + o]);
+    const r = rng.next();
+    if (r < 0.38) {
+      const [x, z] = at(side * (curb || 1.15));
+      b.car(x, z, axis === "x", rng.pick(CANDY));
+    } else if (r < 0.52) {
+      const [x, z] = at(side * curb);
+      b.barrier(x, z, axis === "x", 2.4);
+    } else if (r < 0.64) {
+      const [x, z] = at(side * (curb || 1.4));
+      b.crate(x, z, rng.range(0.9, 1.3), 0, rng.pick(CANDY));
+    } else if (r < 0.74) {
+      const [x, z] = at(side * (curb || 1.2));
+      b.block(x, z, axis === "x" ? 1.8 : 1.2, axis === "x" ? 1.2 : 1.8, 1.3, Mat.PAINT, 0x3a9b5c); // dumpster
+    } else if (r < 0.82) {
+      const [x, z] = at(side * (curb || 1.3));
+      b.lootCrate(x, z);
+    } else if (r < 0.9) {
+      const [x, z] = at(side * (half - 0.6));
+      b.hydrant(x, z);
+    } else {
+      const [x, z] = at(side * (half - 0.9));
+      b.bench(x, z, axis === "x");
+    }
+    side = -side;
+  }
+  for (let u = from + 7; u < to - 4; u += 15) {
+    const o = (Math.floor(u / 15) % 2 ? 1 : -1) * (half - 0.4);
+    const [x, z] = axis === "z" ? [c + o, u] : [u, c + o];
+    b.lamp(x, z, 0xffd59a, 5.5);
+  }
+}
+
+/** Width of the central east–west boulevard (main route; payload track). */
+const BOULEVARD = 11;
+
+/** Z extent of block row j: the two rows beside the boulevard are 2 m shallower. */
+function rowZ(cz: number, j: number): [number, number] {
+  if (j === 1) return [cz - 26.5, cz - BOULEVARD / 2];
+  if (j === 2) return [cz + BOULEVARD / 2, cz + 26.5];
+  return [cz + BLOCK_U[j]! - HALF_BLOCK, cz + BLOCK_U[j]! + HALF_BLOCK];
+}
+
+/** Builds the block grid for a district plus its streets. */
+function cityGrid(b: MapBuilder, rng: Rng, cx: number, cz: number, t: Theme, o: GridOpts = {}): void {
+  const cols = o.cols ?? [0, 1, 2, 3];
+  const rows = o.rows ?? [0, 1, 2, 3];
+  const blocks = new Map<string, Lot[]>();
+  for (const j of rows)
+    for (const i of cols) {
+      const x0 = cx + BLOCK_U[i]! - HALF_BLOCK;
+      const [z0, z1] = rowZ(cz, j);
+      if (o.special?.(i, j, x0, z0, x0 + BLOCK, z1)) continue;
+      blocks.set(`${i},${j}`, fillBlock(b, rng, t, x0, z0, BLOCK, z1 - z0));
+    }
+  // Streets between and around the blocks.
+  const zFrom = rowZ(cz, rows[0]!)[0];
+  const zTo = rowZ(cz, rows[rows.length - 1]!)[1];
+  const xFrom = cx + BLOCK_U[cols[0]!]! - HALF_BLOCK;
+  const xTo = cx + BLOCK_U[cols[cols.length - 1]!]! + HALF_BLOCK;
+  for (const su of STREET_U) {
+    if (cx + su > xFrom && cx + su < xTo) dressStreet(b, rng, "z", cx + su, zFrom, zTo, STREET_U.map((k) => [cz + k, k === 0 ? BOULEVARD / 2 : STREET / 2]));
+    if (cz + su > zFrom && cz + su < zTo) dressStreet(b, rng, "x", cz + su, xFrom, xTo, STREET_U.map((k) => [cx + k, STREET / 2]), su === 0 ? BOULEVARD : STREET);
+  }
+  // Roof bridges across streets between facing buildings of equal height.
+  const gapOk = (g: number) => g > STREET - 0.1 && g < BOULEVARD + 0.1;
+  for (const [key, lots] of blocks) {
+    const [i, j] = key.split(",").map(Number) as [number, number];
+    const east = blocks.get(`${i + 1},${j}`);
+    const south = blocks.get(`${i},${j + 1}`);
+    for (const p of lots) {
+      if (!p.enterable) continue;
+      for (const q of east ?? []) {
+        if (!q.enterable || q.floors !== p.floors || !gapOk(q.x0 - p.x1)) continue;
+        const lo = Math.max(p.z0, q.z0) + 1;
+        const hi = Math.min(p.z1, q.z1) - 1;
+        if (hi - lo > 2.5 && rng.chance(0.35)) bridge(b, p.x1, (lo + hi) / 2 - 1.2, q.x0, (lo + hi) / 2 + 1.2, p.floors * FLOOR_H, true);
+      }
+      for (const q of south ?? []) {
+        if (!q.enterable || q.floors !== p.floors || !gapOk(q.z0 - p.z1)) continue;
+        const lo = Math.max(p.x0, q.x0) + 1;
+        const hi = Math.min(p.x1, q.x1) - 1;
+        if (hi - lo > 2.5 && rng.chance(0.35)) bridge(b, (lo + hi) / 2 - 1.2, p.z1, (lo + hi) / 2 + 1.2, q.z0, p.floors * FLOOR_H, false);
       }
     }
-  // Street clutter: parked/wrecked cars and barricades.
-  for (let i = 0; i < 14; i++) {
-    const alongX = rng.chance(0.5);
-    const lane = rng.pick([-32, 0, 32]);
-    const u = rng.range(-50, 50);
-    const x = alongX ? cx + u : cx + lane;
-    const z = alongX ? cz + lane : cz + u;
-    if (Math.abs(x - cx) < 9 && Math.abs(z - cz) < 9) continue;
-    b.car(x, z, alongX, rng.pick([0x8a1f3a, 0x1f4a8a, 0xc8c8d0, 0x202028, 0x6a2a8a]));
   }
-  for (let i = 0; i < 8; i++) b.barrier(cx + rng.range(-52, 52), cz + rng.pick([-32, 32]) + rng.range(-2, 2), rng.chance(0.5));
-  for (let i = 0; i < 6; i++) b.barrel(cx + rng.pick([-32, 32]) + rng.range(-3, 3), cz + rng.range(-50, 50));
-  for (const u of [-32, 0, 32]) {
-    b.lamp(cx + u + 4.5, cz - 52, NEON.cyan);
-    b.lamp(cx - 52, cz + u + 4.5, NEON.magenta);
-  }
+}
+
+const SHOP_SIGNS = SIGN_WORDS;
+
+function neonCity(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
+  cityGrid(b, rng, cx, cz, {
+    palette: CANDY, mats: [Mat.FACADE, Mat.FACADE, Mat.BRICK, Mat.PAINT], floors: [2, 4], enterable: 0.55, tower: 0.5, courtyard: 0.1, hall: 0.03, signs: SHOP_SIGNS,
+  }, {
+    special: (i, j, x0, z0, x1, z1) => {
+      if (i !== 1 || j !== 1) return false;
+      // Landmark square: striped spire with planters, kiosks and benches.
+      const sx = (x0 + x1) / 2;
+      const sz = (z0 + z1) / 2;
+      const cols = [0xff70a6, 0xffca3a, 0x4cc9f0, 0x5ee35e, 0xb388ff];
+      for (let k = 0; k < 8; k++) b.block(sx, sz, 6 - k * 0.35, 6 - k * 0.35, 6, Mat.PAINT, cols[k % cols.length]!, k * 6);
+      b.light(sx, 50, sz, BRIGHT.pink, 2);
+      b.sign(sx, 14, sz + 3.1, 4.6, 6, 2, BRIGHT.pink, "NEON CITY", "holo");
+      b.sign(sx, 14, sz - 3.1, 4.6, 6, 3, BRIGHT.sky, "SPIRE", "holo");
+      for (const [dx, dz] of [[-7, -7], [7, -7], [-7, 7], [7, 7]] as const) {
+        b.block(sx + dx, sz + dz, 3.5, 1.2, 1.0, Mat.TILE, 0xe9e4d8);
+        b.decor(sx + dx - 1.7, 1.0, sz + dz - 0.55, sx + dx + 1.7, 1.25, sz + dz + 0.55, Mat.LEAF, 0x5cc85c);
+      }
+      b.block(sx - 8, sz, 2.4, 1.4, 1.1, Mat.PAINT, 0xff8a80);
+      b.decor(sx - 9.4, 2.2, sz - 1, sx - 6.6, 2.35, sz + 1, Mat.AWNING, 0xffd166);
+      b.block(sx + 8, sz, 2.4, 1.4, 1.1, Mat.PAINT, 0x7bdff2);
+      b.decor(sx + 6.6, 2.2, sz - 1, sx + 9.4, 2.35, sz + 1, Mat.AWNING, 0xff70a6);
+      b.spot(sx + 5, 0.05, sz - 9);
+      b.lootCrate(sx - 4, sz + 9);
+      return true;
+    },
+  });
 }
 
 function rusthaven(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  const rust = 0x5a3a2a;
-  // Two big warehouses with catwalks.
-  for (const [wx, wz] of [[-28, -28], [26, 22]] as const) {
-    const x0 = cx + wx - 15;
-    const z0 = cz + wz - 10;
-    const w = 30;
-    const d = 20;
-    const h = 9;
-    const door = (c: number) => [[c - 2.5, c + 2.5, -1, 4.5]];
-    b.wall("x", x0, x0 + w, z0, z0 + 0.4, 0, h, [...door(x0 + w / 2), [x0 + 4, x0 + 6, 5.6, 7], [x0 + 24, x0 + 26, 5.6, 7]], Mat.PANEL, rust);
-    b.wall("x", x0, x0 + w, z0 + d - 0.4, z0 + d, 0, h, [...door(x0 + 8), [x0 + 18, x0 + 20, 5.6, 7]], Mat.PANEL, rust);
-    b.wall("z", z0, z0 + d, x0, x0 + 0.4, 0, h, [[z0 + 8, z0 + 12, -1, 3]], Mat.PANEL, rust);
-    b.wall("z", z0, z0 + d, x0 + w - 0.4, x0 + w, 0, h, [[z0 + 9, z0 + 11, 5.6, 7]], Mat.PANEL, rust);
-    b.box(x0, h, z0, x0 + w, h + 0.4, z0 + d, Mat.METAL, 0x3a2e2a);
-    // Catwalk along the north wall + stairs.
-    b.box(x0 + 0.4, 4.6, z0 + 0.4, x0 + w - 0.4, 5, z0 + 2.6, Mat.METAL, 0x4a4a52);
-    b.box(x0 + 0.4, 5, z0 + 2.55, x0 + w - 0.4, 6, z0 + 2.65, Mat.FENCE, 0x8899aa, BoxFlag.BULLET_PASS);
-    b.stairs(x0 + 2, z0 + 4, "x", 1, 1.6, 0, 5, Mat.METAL, 0x4a4a52);
-    b.box(x0 + 7.9, 4.6, z0 + 2.6, x0 + 9.5, 5, z0 + 4.8, Mat.METAL, 0x4a4a52);
-    // Interior cover: crate stacks and machinery.
-    for (let i = 0; i < 6; i++) {
-      const px = x0 + 4 + rng.range(0, w - 8);
-      const pz = z0 + 6 + rng.range(0, d - 9);
-      b.crate(px, pz, 1.4);
-      if (rng.chance(0.5)) b.crate(px, pz, 1.2, 1.4);
-    }
-    b.block(x0 + w * 0.7, z0 + d * 0.6, 4, 3, 2.4, Mat.METAL, 0x55606a);
-    b.light(x0 + w / 2, 8, z0 + d / 2, NEON.orange, 1);
-    b.spot(x0 + w / 2, 5.05, z0 + 1.5);
-    b.spot(x0 + w * 0.3, 0.05, z0 + d * 0.6);
-    b.sign(x0 + w / 2, 7.4, z0 + d + 0.1, 10, 1.6, 2, NEON.orange, "RUSTHAVEN IRONWORKS");
-    b.barrel(x0 + 2, z0 + d - 2);
-    b.barrel(x0 + w - 3, z0 + 6);
-  }
-  // Factory block with smokestacks (landmark).
-  b.building(cx + 14, cz - 46, 22, 14, { floors: 2, color: 0x4a3328, mat: Mat.PANEL, neon: NEON.orange, doors: ["s", "w"], sign: "FOUNDRY 7" });
-  for (const [sx, h] of [[18, 34], [26, 42], [34, 30]] as const) {
-    b.block(cx + sx, cz - 28, 3.2, 3.2, h, Mat.CONCRETE, 0x5a4a44);
-    b.decor(cx + sx - 1.7, h - 2, cz - 29.7, cx + sx + 1.7, h - 1.6, cz - 26.3, Mat.NEON, NEON.red);
-    b.light(cx + sx, h + 1, cz - 28, NEON.red, 1.2);
-  }
-  // Scrapyard with fences and scrap piles.
-  b.fence(cx - 50, cz + 12, cx - 10, cz + 12.1);
-  b.fence(cx - 50, cz + 12, cx - 49.9, cz + 50);
-  for (let i = 0; i < 18; i++) {
-    const px = cx - 46 + rng.range(0, 34);
-    const pz = cz + 16 + rng.range(0, 32);
-    const s = rng.range(1.2, 3);
-    b.block(px, pz, s, s * rng.range(0.8, 1.8), rng.range(0.8, 2.4), Mat.METAL, rng.pick([0x5a4030, 0x4a4a50, 0x6a3020]));
-  }
-  for (let i = 0; i < 4; i++) b.car(cx - 40 + i * 8, cz + 46, false, 0x5a3a2a);
-  // Container stacks.
-  for (let i = 0; i < 5; i++) {
-    const px = cx - 6 + i * 7;
-    const col = rng.pick([0xa83a2a, 0x2a6aa8, 0x3a8a4a, 0xc89a2a]);
-    b.container(px, cz - 8, false, col);
-    if (i % 2 === 0) b.container(px, cz - 8, false, rng.pick([0xa83a2a, 0x2a6aa8]), 2.6);
-  }
-  b.ladder(cx - 6, cz - 4.95, 0, 5.2, "s");
-  b.spot(cx - 6, 5.25, cz - 8);
-  for (let i = 0; i < 8; i++) b.barrel(cx + rng.range(-50, 50), cz + rng.range(-4, 6));
-  // Water tower with ladder.
-  b.block(cx + 46, cz - 10, 0.5, 0.5, 10, Mat.METAL, 0x444444);
-  b.block(cx + 50, cz - 10, 0.5, 0.5, 10, Mat.METAL, 0x444444);
-  b.block(cx + 48, cz - 10, 6, 6, 0.4, Mat.METAL, 0x555560, 10);
-  b.block(cx + 48, cz - 10, 4, 4, 4, Mat.METAL, 0x5a4a3a, 10.4);
-  b.ladder(cx + 46, cz - 6.9, 0, 10.4, "s");
-  b.box(cx + 45, 0, cz - 7.2, cx + 47, 10, cz - 7.0, Mat.METAL, 0x444444, BoxFlag.DECOR);
-  b.spot(cx + 50.4, 10.45, cz - 12.4);
+  cityGrid(b, rng, cx, cz, {
+    palette: [0xd0643f, 0xc85a3a, 0xe07a5f, 0x80cbe8, 0xffd166, 0xb07a4a], mats: [Mat.BRICK, Mat.BRICK, Mat.PANEL, Mat.METAL], floors: [1, 3], enterable: 0.6, tower: 0.12,
+    courtyard: 0.25, hall: 0.25, signs: ["WORKSHOP", "GARAGE", "WELDING", "PARTS", "FOUNDRY", "IRONWORKS", "TOOLS"],
+  }, {
+    special: (i, j, x0, z0) => {
+      if (i !== 2 || j !== 0) return false;
+      // Factory with brick smokestacks (landmark).
+      b.building(x0, z0, BLOCK, 13, { floors: 2, color: 0xe07a5f, mat: Mat.BRICK, neon: BRIGHT.orange, doors: ["s", "w", "n"], sign: "FOUNDRY 7" });
+      for (const [dx, h] of [[4, 30], [11.5, 38], [19, 26]] as const) {
+        b.block(x0 + dx, z0 + 18, 3.2, 3.2, h, Mat.BRICK, 0xc85a3a);
+        for (let y = 6; y < h; y += 6) b.decor(x0 + dx - 1.65, y, z0 + 16.35, x0 + dx + 1.65, y + 0.8, z0 + 19.65, Mat.PAINT, 0xffffff);
+        b.light(x0 + dx, h + 1, z0 + 18, BRIGHT.red, 0.8);
+      }
+      b.container(x0 + 8, z0 + 21.3, true, 0xff595e);
+      b.barrel(x0 + 15, z0 + 21);
+      return true;
+    },
+  });
 }
 
 function eclipseHarbor(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Quay edge & piers into the electrified water.
-  const edgeX = cx + 30;
-  b.decor(edgeX - 0.3, 0, cz - 46, edgeX + 0.1, 0.25, cz + 42, Mat.NEON, NEON.cyan);
-  for (const pz of [-30, -6, 18]) {
-    b.box(edgeX, -1, cz + pz - 4, edgeX + 26, 0, cz + pz + 4, Mat.WOOD, 0x4a3a2e);
-    b.block(edgeX + 24, cz + pz, 1, 1, 1, Mat.METAL, 0x666a70);
-    b.crate(edgeX + 10, cz + pz + 2, 1.3);
-    b.light(edgeX + 25, 1.6, cz + pz, NEON.cyan, 0.7);
-    b.spot(edgeX + 18, 0.05, cz + pz - 1);
+  const theme: Theme = {
+    palette: [0x7bdff2, 0xffffff, 0xff595e, 0x80cbe8, 0xffd166, 0xb2f7ef], mats: [Mat.PANEL, Mat.FACADE, Mat.BRICK, Mat.CONTAINER], floors: [1, 3], enterable: 0.6,
+    tower: 0.1, courtyard: 0.25, hall: 0.15, signs: ["FISH & CHIPS", "DOCK 9", "PORT OFFICE", "BAIT & TACKLE", "SURF SHOP", "SEAFOOD"],
+  };
+  cityGrid(b, rng, cx, cz, theme, {
+    cols: [0, 1, 2],
+    rows: [0, 1, 2],
+    special: (i, j, x0, z0) => {
+      if (i !== 0 || j !== 0) return false;
+      // Container yard: stacks with ladders make a vertical maze.
+      for (let r = 0; r < 3; r++)
+        for (let c = 0; c < 2; c++) {
+          const px = x0 + 5 + c * 13;
+          const pz = z0 + 3 + r * 8;
+          b.container(px, pz, true, rng.pick(CANDY));
+          const stack = rng.int(0, 2);
+          for (let s = 1; s <= stack; s++) b.container(px, pz, true, rng.pick(CANDY), s * 2.6);
+          if (stack) {
+            b.ladder(px - 3.05, pz, 0, stack * 2.6 + 2.6, "w");
+            b.spot(px, stack * 2.6 + 2.65, pz);
+          }
+        }
+      return true;
+    },
+  });
+  // Waterfront strip south of the grid: sheds and stacked containers.
+  for (let k = 0; k < 3; k++) {
+    const x0 = cx + BLOCK_U[k]! - HALF_BLOCK;
+    if (rng.chance(0.6)) b.building(x0, cz + 33.5, BLOCK, 8, { floors: rng.int(1, 2), color: rng.pick(theme.palette), mat: Mat.PANEL, doors: ["n", "s"], sign: rng.pick(theme.signs) });
+    else for (let s = 0; s < 3; s++) b.container(x0 + 4 + s * 7.5, cz + 37.5, false, rng.pick(CANDY), 0);
   }
-  // Moored cargo ship with accessible deck.
+  dressStreet(b, rng, "x", cz + 30, cx - 56.5, cx + 26.5, [[cx - 30, STREET / 2], [cx, STREET / 2]]);
+  // Quay, piers and the moored cargo ship.
+  const edgeX = cx + 30;
+  b.decor(edgeX - 0.3, 0, cz - 46, edgeX + 0.1, 0.25, cz + 42, Mat.PAINT, 0xffca3a);
+  for (const pz of [-30, 0, 18]) {
+    b.box(edgeX, -1, cz + pz - 4, edgeX + 26, 0, cz + pz + 4, Mat.WOOD, 0xc49a6c);
+    b.block(edgeX + 24, cz + pz, 1, 1, 1, Mat.PAINT, 0xff595e);
+    b.crate(edgeX + 10, cz + pz + 2, 1.3, 0, rng.pick(CANDY));
+    b.lootCrate(edgeX + 16, cz + pz - 2);
+    b.light(edgeX + 25, 1.6, cz + pz, 0xffd59a, 0.7);
+  }
   const sx0 = edgeX + 8;
   const sz0 = cz + 26;
-  b.box(sx0, -3, sz0, sx0 + 40, 5.5, sz0 + 12, Mat.METAL, 0x2a3a4a);
-  b.box(sx0 + 30, 5.5, sz0 + 1, sx0 + 38, 12, sz0 + 11, Mat.PANEL, 0xd0d4dc);
-  b.sign(sx0 + 30 - 0.08, 10, sz0 + 6, 6, 1.4, 1, NEON.cyan, "ECLIPSE LINE");
-  b.container(sx0 + 8, sz0 + 6, true, 0xc8402a, 5.5);
-  b.container(sx0 + 16, sz0 + 3.5, true, 0x2a6aa8, 5.5);
-  b.container(sx0 + 16, sz0 + 8.5, true, 0xc89a2a, 5.5);
-  b.container(sx0 + 23, sz0 + 6, true, 0x3a8a4a, 5.5);
-  b.stairs(sx0 - 0.1, sz0 - 6, "z", 1, 2, 0, 5.5, Mat.METAL, 0x555a66);
-  b.box(sx0 - 1.1, -1, sz0 - 6.2, sx0 + 0.9, 0, sz0, Mat.WOOD, 0x4a3a2e);
+  b.box(sx0, -3, sz0, sx0 + 40, 1.5, sz0 + 12, Mat.PAINT, 0xe63946);
+  b.box(sx0, 1.5, sz0, sx0 + 40, 5.5, sz0 + 12, Mat.PAINT, 0x1d3557);
+  b.box(sx0 + 30, 5.5, sz0 + 1, sx0 + 38, 12, sz0 + 11, Mat.PAINT, 0xffffff);
+  b.sign(sx0 + 30 - 0.08, 10, sz0 + 6, 6, 1.4, 1, BRIGHT.sky, "SUNNY LINE");
+  b.container(sx0 + 8, sz0 + 6, true, 0xff595e, 5.5);
+  b.container(sx0 + 16, sz0 + 3.5, true, 0x4cc9f0, 5.5);
+  b.container(sx0 + 16, sz0 + 8.5, true, 0xffca3a, 5.5);
+  b.container(sx0 + 23, sz0 + 6, true, 0x5ee35e, 5.5);
+  // Gangway: the top step meets the deck edge; the pier gives a landing at the bottom.
+  b.stairs(sx0 - 0.1, sz0 - 6.6, "z", 1, 2, 0, 5.5, Mat.WOOD, 0xc98f5a);
+  b.box(sx0 - 1.1, -1, sz0 - 7.8, sx0 + 0.9, 0, sz0, Mat.WOOD, 0xc49a6c);
   b.spot(sx0 + 12, 5.55, sz0 + 6);
-  b.spot(sx0 + 34, 12.05, sz0 + 6);
   b.ladder(sx0 + 34, sz0 + 0.95, 5.5, 12, "n");
-
-  // Container yard.
-  for (let row = 0; row < 4; row++)
-    for (let col = 0; col < 5; col++) {
-      if (rng.chance(0.18)) continue;
-      const px = cx - 44 + col * 13;
-      const pz = cz - 40 + row * 11;
-      const c1 = rng.pick([0xc8402a, 0x2a6aa8, 0xc89a2a, 0x3a8a4a, 0x8a3aa8, 0x2aa8a0]);
-      b.container(px, pz, true, c1);
-      const stack = rng.int(0, 2);
-      for (let s = 1; s <= stack; s++) b.container(px + rng.pick([0, 0, 1.5]), pz, true, rng.pick([0xc8402a, 0x2a6aa8, 0xc89a2a]), s * 2.6);
-      if (stack >= 1 && rng.chance(0.5)) {
-        b.ladder(px - 3.05, pz, 0, stack * 2.6 + 2.6, "w");
-        b.spot(px, stack * 2.6 + 2.65, pz);
-      }
-    }
-  // Gantry crane (landmark) spanning the yard.
-  const gx = cx - 18;
-  for (const lz of [-46, 4]) {
-    b.block(gx - 12, cz + lz, 1.4, 1.4, 30, Mat.METAL, 0xd8a020);
-    b.block(gx + 12, cz + lz, 1.4, 1.4, 30, Mat.METAL, 0xd8a020);
+  // Gantry crane over the quay (landmark).
+  const gx = cx + 42;
+  for (const lz of [-61, -49]) {
+    b.block(gx - 9, cz + lz, 1.4, 1.4, 26, Mat.PAINT, 0xffca3a);
+    b.block(gx + 9, cz + lz, 1.4, 1.4, 26, Mat.PAINT, 0xffca3a);
   }
-  b.box(gx - 13, 30, cz - 47, gx - 11, 32, cz + 5, Mat.METAL, 0xd8a020);
-  b.box(gx + 11, 30, cz - 47, gx + 13, 32, cz + 5, Mat.METAL, 0xd8a020);
-  b.box(gx - 13, 30, cz - 22, gx + 13, 32, cz - 18, Mat.METAL, 0xd8a020);
-  b.block(gx, cz - 20, 4, 4, 3, Mat.PANEL, 0x303844, 27);
-  b.ladder(gx - 12, cz + 4.7, 0, 30, "s");
-  b.spot(gx - 12, 32.05, cz - 30);
-  b.light(gx, 33, cz - 20, NEON.red, 1.2);
-  for (const lz of [-46, 4]) b.light(gx - 12, 31, cz + lz, NEON.yellow, 0.7);
-  // Port authority office & sheds.
-  b.building(cx - 50, cz + 18, 16, 12, { floors: 2, color: 0x2a3444, neon: NEON.cyan, doors: ["e", "n"], sign: "PORT AUTHORITY" });
-  b.building(cx - 26, cz + 24, 12, 10, { floors: 1, color: 0x3a3a44, mat: Mat.PANEL, neon: NEON.green, doors: ["n", "e"] });
-  b.building(cx + 2, cz + 22, 14, 10, { floors: 1, color: 0x34303a, mat: Mat.PANEL, neon: NEON.orange, doors: ["w", "n"], sign: "DOCK 9" });
-  for (let i = 0; i < 10; i++) b.barrel(cx + rng.range(-40, 25), cz + rng.range(-35, 15));
-  for (let i = 0; i < 6; i++) b.crate(cx + rng.range(-48, 26), cz + rng.range(-48, 40), 1.3);
-  b.car(cx - 10, cz + 36, true, 0xd8a020);
-  b.car(cx + 12, cz + 38, true, 0x2a6aa8);
+  b.box(gx - 10, 26, cz - 62, gx - 8, 28, cz - 48, Mat.PAINT, 0xffca3a);
+  b.box(gx + 8, 26, cz - 62, gx + 10, 28, cz - 48, Mat.PAINT, 0xffca3a);
+  b.box(gx - 10, 26, cz - 57, gx + 10, 28, cz - 53, Mat.PAINT, 0xffca3a);
+  b.ladder(gx - 9, cz - 48.3, 0, 26, "s");
+  b.spot(gx - 9, 28.05, cz - 55);
 }
 
 function sectorZero(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  const wallCol = 0x3a4440;
-  // Perimeter wall with gates.
-  const r = 52;
-  const gate = (c: number) => [[c - 4, c + 4, -1, 6]];
-  b.wall("x", cx - r, cx + r, cz - r, cz - r + 0.6, 0, 4, gate(cx), Mat.CONCRETE, wallCol);
-  b.wall("x", cx - r, cx + r, cz + r - 0.6, cz + r, 0, 4, gate(cx - 20), Mat.CONCRETE, wallCol);
-  b.wall("z", cz - r, cz + r, cx - r, cx - r + 0.6, 0, 4, gate(cz - 10), Mat.CONCRETE, wallCol);
-  b.wall("z", cz - r, cz + r, cx + r - 0.6, cx + r, 0, 4, gate(cz + 10), Mat.CONCRETE, wallCol);
-  b.neonRect(cx - r, cz - r, cx + r, cz + r, 4, NEON.green, 0.05);
-  b.sign(cx, 5.2, cz - r - 0.1, 12, 1.4, 3, NEON.green, "SECTOR ZERO — RESTRICTED");
-  // Containment dome (stepped), landmark.
-  for (let i = 0; i < 6; i++) {
-    const s = 22 - i * 3.2;
-    b.block(cx - 26, cz - 24, s, s, 2.6, Mat.PANEL, i % 2 ? 0x2a4a3a : 0x34584a, i * 2.6);
-  }
-  b.decor(cx - 27, 15.6, cz - 25, cx - 25, 22, cz - 23, Mat.NEON, NEON.green);
-  b.light(cx - 26, 20, cz - 24, NEON.green, 1.6);
-  b.stairs(cx - 26, cz - 38.6, "z", 1, 2, 0, 2.6, Mat.METAL, 0x445048);
-  b.spot(cx - 26, 2.65, cz - 34.2);
-  // Radar mast with ladder.
-  b.block(cx + 38, cz - 38, 2, 2, 22, Mat.METAL, 0x5a6060);
-  b.block(cx + 38, cz - 38, 7, 7, 0.4, Mat.METAL, 0x6a7070, 14);
-  b.block(cx + 38, cz - 38, 5, 0.4, 3, Mat.PANEL, 0xa0a8a8, 22);
-  b.ladder(cx + 38, cz - 36.95, 0, 14.4, "s");
-  b.spot(cx + 40, 14.45, cz - 40);
-  // Lab buildings.
-  b.building(cx + 6, cz - 44, 18, 12, { floors: 2, color: 0x2e3a38, neon: NEON.green, doors: ["s", "w"], sign: "LAB A" });
-  b.building(cx + 24, cz - 16, 14, 14, { floors: 3, color: 0x2a3436, neon: NEON.cyan, doors: ["w", "s"], sign: "ZETA BIOTECH" });
-  b.building(cx - 44, cz + 8, 14, 12, { floors: 2, color: 0x30383a, neon: NEON.green, doors: ["e", "n"], sign: "LAB C" });
-
-  // Underground lab: pit [cx-18, cz+6]..[cx+18, cz+30], floor at y=-5.
+  cityGrid(b, rng, cx, cz, {
+    palette: [0xffffff, 0xb2f7ef, 0x80cbe8, 0x8fd3a8, 0x95d5b2, 0xffe8a3], mats: [Mat.PAINT, Mat.PANEL, Mat.FACADE], floors: [1, 3], enterable: 0.65, tower: 0.15,
+    courtyard: 0.2, hall: 0.08, signs: ["LAB A", "LAB B", "BIOTECH", "ROBOTICS", "CAFETERIA", "ARCHIVE", "OPTICS"],
+  }, {
+    special: (i, j, x0, z0, _x1, z1) => {
+      if (i === 0 && j === 0) {
+        // Glass observatory dome (stepped), landmark.
+        const sx = x0 + HALF_BLOCK;
+        const sz = z0 + HALF_BLOCK;
+        for (let k = 0; k < 6; k++) {
+          const s = 20 - k * 3;
+          b.block(sx, sz, s, s, 2.6, k % 2 ? Mat.GLASS : Mat.PAINT, k % 2 ? 0xbfe6ff : 0xffffff, k * 2.6);
+        }
+        b.light(sx, 18, sz, BRIGHT.green, 1.6);
+        b.stairs(sx, z0 + 21.5 + 3.6, "z", -1, 2, 0, 2.6, Mat.WOOD, 0xc98f5a);
+        b.spot(sx, 2.65, z0 + 20.8);
+        return true;
+      }
+      // The two blocks over the underground lab are a sunken courtyard.
+      if (j === 2 && (i === 1 || i === 2)) {
+        // Small labs flank the pit.
+        const lx = i === 1 ? x0 : x0 + BLOCK - 7.5;
+        b.building(lx, z0, 7.5, z1 - z0, { floors: 1, color: i === 1 ? 0xb2f7ef : 0x8fd3a8, doors: [i === 1 ? "w" : "e", "s"], sign: "LAB" });
+        b.lootCrate(i === 1 ? x0 + 9 : x0 + BLOCK - 9, z0 + 1.2);
+        return true;
+      }
+      return false;
+    },
+  });
+  // Underground lab: pit [cx-18, cz+6]..[cx+18, cz+26], floor at y=-5.
   const px0 = cx - 18;
   const px1 = cx + 18;
   const pz0 = cz + 6;
-  const pz1 = cz + 30;
+  const pz1 = cz + 26;
   const D = -5;
-  b.box(px0, D - 1, pz0, px1, D, pz1, Mat.PANEL, 0x2a3030);
-  b.box(px0, D, pz0, px0 + 0.5, 0, pz1, Mat.CONCRETE, 0x30383a);
-  b.box(px1 - 0.5, D, pz0, px1, 0, pz1, Mat.CONCRETE, 0x30383a);
-  b.box(px0, D, pz0, px1, 0, pz0 + 0.5, Mat.CONCRETE, 0x30383a);
-  b.box(px0, D, pz1 - 0.5, px1, 0, pz1, Mat.CONCRETE, 0x30383a);
-  // Ceiling over the middle (the "underground" part), open at both ends for stairs.
-  b.box(px0 + 7, -0.4, pz0, px1 - 7, 0, pz1, Mat.CONCRETE, 0x2a2e30);
-  // Stair access from the surface at both open ends.
-  b.stairs(px0 + 2, pz0 + 6.5, "z", -1, 3, D, 0, Mat.METAL, 0x445048);
-  b.stairs(px1 - 2, pz1 - 6.5, "z", 1, 3, D, 0, Mat.METAL, 0x445048);
-  // Partition walls & lab benches below ground.
-  b.wall("z", pz0 + 0.5, pz1 - 0.5, cx - 4, cx - 3.7, D, -0.4, [[pz0 + 4, pz0 + 7, D - 1, D + 2.6], [pz1 - 8, pz1 - 5, D - 1, D + 2.6]], Mat.PANEL, 0x3a4444);
-  b.wall("z", pz0 + 0.5, pz1 - 0.5, cx + 3.7, cx + 4, D, -0.4, [[pz0 + 10, pz0 + 13, D - 1, D + 2.6]], Mat.PANEL, 0x3a4444);
-  for (let i = 0; i < 5; i++) b.block(cx + rng.range(-12, 12), pz0 + rng.range(4, 20), 2.4, 0.9, 1.0, Mat.METAL, 0x606a70, D);
-  b.block(cx, pz0 + 12, 2.2, 2.2, 3, Mat.GLASS, 0x2aff8a, D);
-  b.light(cx, D + 3, pz0 + 12, NEON.green, 1.5);
-  b.light(cx - 10, D + 3, pz0 + 6, NEON.cyan, 0.8);
-  b.light(cx + 10, D + 3, pz1 - 6, NEON.cyan, 0.8);
-  b.spot(cx, D + 0.05, pz0 + 6);
-  b.spot(cx - 9, D + 0.05, pz1 - 8);
-  b.spot(cx + 9, D + 0.05, pz0 + 16);
-  b.sign(cx, -1.2, pz0 + 0.55, 6, 0.9, 2, NEON.green, "SUBLEVEL 0");
-  // Railings around the pit openings.
-  b.box(px0 + 4, 0, pz0 - 0.2, px0 + 7, 1.0, pz0, Mat.METAL, 0x606a6a);
-  b.box(px1 - 7, 0, pz1, px1 - 4, 1.0, pz1 + 0.2, Mat.METAL, 0x606a6a);
-  // Surface cover: crates, barriers, wrecked trucks.
-  for (let i = 0; i < 10; i++) {
-    const x = cx + rng.range(-46, 46);
-    const z = cz + rng.range(-46, 46);
-    if (x > px0 - 2 && x < px1 + 2 && z > pz0 - 2 && z < pz1 + 2) continue;
-    if (rng.chance(0.5)) b.barrier(x, z, rng.chance(0.5));
-    else b.crate(x, z, 1.4, 0, 0x4a5048);
-  }
-  for (let i = 0; i < 6; i++) b.barrel(cx + rng.range(-45, 45), cz + rng.range(-45, -2));
-  b.car(cx + 30, cz + 40, true, 0x3a4a3a);
-  b.car(cx - 34, cz - 2, false, 0x3a4a3a);
+  const lab = 0xeef3f6;
+  b.box(px0, D - 1, pz0, px1, D, pz1, Mat.TILE, 0xdfe8ee);
+  b.box(px0, D, pz0, px0 + 0.5, 0, pz1, Mat.PAINT, lab);
+  b.box(px1 - 0.5, D, pz0, px1, 0, pz1, Mat.PAINT, lab);
+  b.box(px0, D, pz0, px1, 0, pz0 + 0.5, Mat.PAINT, lab);
+  b.box(px0, D, pz1 - 0.5, px1, 0, pz1, Mat.PAINT, lab);
+  b.box(px0 + 7, -0.4, pz0, px1 - 7, 0, pz1, Mat.CONCRETE, 0xbcd0b0);
+  b.stairs(px0 + 2, pz0 + 6.5, "z", -1, 3, D, 0, Mat.WOOD, 0xc98f5a);
+  b.stairs(px1 - 2, pz1 - 6.5, "z", 1, 3, D, 0, Mat.WOOD, 0xc98f5a);
+  b.wall("z", pz0 + 0.5, pz1 - 0.5, cx - 4, cx - 3.7, D, -0.4, [[pz0 + 3, pz0 + 6, D - 1, D + 2.6], [pz1 - 7, pz1 - 4, D - 1, D + 2.6]], Mat.PAINT, 0xb2f7ef);
+  b.wall("z", pz0 + 0.5, pz1 - 0.5, cx + 3.7, cx + 4, D, -0.4, [[pz0 + 8, pz0 + 11, D - 1, D + 2.6]], Mat.PAINT, 0xffd166);
+  for (let k = 0; k < 4; k++) b.block(cx + rng.range(-12, 12), pz0 + rng.range(4, 16), 2.4, 0.9, 1.0, Mat.TILE, 0xffffff, D);
+  b.block(cx, pz0 + 10, 2.2, 2.2, 3, Mat.GLASS, 0x5ee35e, D);
+  b.light(cx, D + 3, pz0 + 10, BRIGHT.green, 1.5);
+  b.spot(cx, D + 0.05, pz0 + 5);
+  b.spot(cx - 9, D + 0.05, pz1 - 6);
+  b.lootCrate(cx + 10, pz0 + 6, D);
+  b.box(px0 + 4, 0, pz0 - 0.2, px0 + 7, 1.0, pz0, Mat.PAINT, 0xffca3a);
+  b.box(px1 - 7, 0, pz1, px1 - 4, 1.0, pz1 + 0.2, Mat.PAINT, 0xffca3a);
+  b.box(px0 - 0.2, 0, pz0, px0, 1.0, pz1, Mat.PAINT, 0xffca3a);
+  b.box(px1, 0, pz0, px1 + 0.2, 1.0, pz1, Mat.PAINT, 0xffca3a);
 }
 
 function chromeValley(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Elevated highway running east-west at y=8.
-  const hz = cz - 18;
+  cityGrid(b, rng, cx, cz, {
+    palette: [0xffd166, 0xff8a80, 0x7bdff2, 0xf7a072, 0x80cbe8, 0xffffff], mats: [Mat.PAINT, Mat.FACADE, Mat.BRICK, Mat.PANEL], floors: [1, 2], enterable: 0.7, tower: 0.1,
+    courtyard: 0.35, hall: 0.12, signs: ["DINER", "MOTEL", "GARAGE", "FUEL-X", "TIRES", "CAR WASH", "BURGERS", "DRIVE-IN"],
+  });
+  // Elevated highway above the northern east-west street (y = 8).
   const H = 8;
-  b.box(cx - 64, H - 0.6, hz - 7, cx + 64, H, hz + 7, Mat.CONCRETE, 0x40404c);
-  b.wall("x", cx - 64, cx + 64, hz - 7, hz - 6.6, H, H + 1, [[cx + 36.4, cx + 38.4, H - 1, H + 2]], Mat.CONCRETE, 0x5a5a66);
-  b.wall("x", cx - 64, cx + 64, hz + 6.6, hz + 7, H, H + 1, [[cx - 38.4, cx - 36.4, H - 1, H + 2]], Mat.CONCRETE, 0x5a5a66);
-  b.decor(cx - 64, H + 1, hz - 7, cx + 64, H + 1.06, hz - 6.9, Mat.NEON, NEON.yellow);
-  b.decor(cx - 64, H + 1, hz + 6.9, cx + 64, H + 1.06, hz + 7, Mat.NEON, NEON.yellow);
-  for (let x = cx - 56; x <= cx + 56; x += 16) b.block(x, hz, 2, 6, H - 0.6, Mat.CONCRETE, 0x3a3a44);
-  b.sign(cx - 20, H + 4, hz + 7.1, 9, 2, 2, NEON.green, "CHROME VALLEY EXPWY");
-  b.box(cx - 24.5, H + 1, hz + 6.95, cx - 15.5, H + 3, hz + 7.05, Mat.METAL, 0x30303a, BoxFlag.DECOR);
-  // Stair access at both ends and a ladder mid-span.
-  b.stairs(cx - 48, hz + 9.5, "x", 1, 2.5, 0, H, Mat.CONCRETE, 0x50505c);
-  b.box(cx - 48 + 9.6, 0, hz + 7, cx - 48 + 11.6, H, hz + 11, Mat.CONCRETE, 0x50505c);
-  b.stairs(cx + 48, hz - 9.5, "x", -1, 2.5, 0, H, Mat.CONCRETE, 0x50505c);
-  b.box(cx + 48 - 11.6, 0, hz - 11, cx + 48 - 9.6, H, hz - 7, Mat.CONCRETE, 0x50505c);
-  b.ladder(cx + 8, hz + 7, 0, H, "s");
-  // Wrecked convoy on the deck.
-  for (let i = 0; i < 7; i++) {
-    const x = cx + rng.range(-56, 56);
-    const z = hz + rng.range(-4.5, 4.5);
-    if (rng.chance(0.6)) b.car(x, z, true, rng.pick([0x6a6a70, 0x8a1f3a, 0x1f4a8a]), H);
-    else b.block(x, z, 8, 2.6, 3, Mat.METAL, 0x50565e, H);
+  const hz = cz - 30; // over the northern cross street, leaving the boulevard clear
+  const he = 51.5; // ramps end ~3 m short of the district wall
+  b.box(cx - he, H - 0.6, hz - 3.5, cx + he, H, hz + 3.5, Mat.ASPHALT, 0x6b7280);
+  b.box(cx - he, H, hz - 3.5, cx + he, H + 1, hz - 3.2, Mat.PAINT, 0xffffff);
+  b.box(cx - he, H, hz + 3.2, cx + he, H + 1, hz + 3.5, Mat.PAINT, 0xffffff);
+  for (let x = cx - he + 2; x < cx + he - 4; x += 8) b.decor(x, H, hz - 0.1, x + 4, H + 0.01, hz + 0.1, Mat.PAINT, 0xffca3a);
+  for (let x = cx - 52; x <= cx + 52; x += 14) {
+    if (Math.abs(x - cx) > he - 0.5) continue; // the ladders below sit on these pillars
+    b.block(x, hz - 3.2, 0.8, 0.8, H - 0.6, Mat.CONCRETE, 0xc9d1d8);
+    b.block(x, hz + 3.2, 0.8, 0.8, H - 0.6, Mat.CONCRETE, 0xc9d1d8);
   }
-  for (let i = 0; i < 6; i++) b.block(cx + rng.range(-50, 50), hz + rng.pick([-3, 3]), 3, 0.6, 1, Mat.CONCRETE, 0x8a8f9e, H);
+  b.sign(cx - 20, H + 3.5, hz + 3.6, 9, 2, 2, BRIGHT.green, "CHROME VALLEY EXPWY");
+  // Ramps (stairs) at both ends on the arterial roads, ladders on pillars.
+  b.stairs(cx - he - 9.6, hz, "x", 1, 3, 0, H, Mat.CONCRETE, 0xd8d2c4);
+  b.stairs(cx + he + 9.6, hz, "x", -1, 3, 0, H, Mat.CONCRETE, 0xd8d2c4);
+  b.ladder(cx - 24, hz - 3.5, 0, H, "n");
+  b.ladder(cx + 18, hz + 3.5, 0, H, "s");
+  for (let k = 0; k < 6; k++) {
+    const x = cx + rng.range(-he + 3, he - 3);
+    if (rng.chance(0.6)) b.car(x, hz + rng.pick([-1.4, 1.4]), true, rng.pick(CANDY), H);
+    else b.block(x, hz, 3, 0.6, 1, Mat.PAINT, 0xff9f1c, H);
+  }
   b.spot(cx - 30, H + 0.05, hz);
-  b.spot(cx + 22, H + 0.05, hz + 2);
-  b.light(cx, H + 3, hz, NEON.yellow, 0.8);
-
-  // Tunnel through a concrete hill (north-south).
-  const tx = cx - 36;
-  const tz = cz + 24;
-  b.box(tx - 14, 0, tz - 18, tx - 3, 9, tz + 18, Mat.ROCK, 0x3a3640);
-  b.box(tx + 3, 0, tz - 18, tx + 14, 9, tz + 18, Mat.ROCK, 0x3a3640);
-  b.box(tx - 3, 5.5, tz - 18, tx + 3, 9, tz + 18, Mat.ROCK, 0x3a3640);
-  for (let z = tz - 15; z <= tz + 15; z += 6) {
-    b.decor(tx - 3, 4.9, z - 0.4, tx - 2.9, 5.1, z + 0.4, Mat.NEON, NEON.orange);
-    b.decor(tx + 2.9, 4.9, z - 0.4, tx + 3, 5.1, z + 0.4, Mat.NEON, NEON.orange);
-    b.light(tx, 5, z, NEON.orange, 0.5);
-  }
-  b.car(tx + 1, tz - 4, false, 0x5a5a60);
-  b.block(tx - 1.3, tz + 8, 2.2, 7, 2.8, Mat.METAL, 0x6a5a40);
-  b.sign(tx, 7, tz - 18.1, 5, 1.2, 3, NEON.orange, "TUNNEL 3");
-  b.stairs(tx + 24.8, tz + 12, "x", -1, 3, 0, 9, Mat.CONCRETE, 0x4a4650);
-  b.spot(tx + 8, 9.05, tz - 8);
-
-  // Canal bridges (canal trench at cx+20..cx+28).
-  for (const bz of [-44, 6, 42]) {
-    b.box(cx + 19, -0.4, cz + bz - 3, cx + 29, 0, cz + bz + 3, Mat.CONCRETE, 0x50505c);
-    b.box(cx + 19, 0, cz + bz - 3, cx + 29, 1, cz + bz - 2.8, Mat.METAL, 0x707080);
-    b.box(cx + 19, 0, cz + bz + 2.8, cx + 29, 1, cz + bz + 3, Mat.METAL, 0x707080);
-  }
-  b.ladder(cx + 20.4, cz - 20, -3, 0, "e");
-  b.ladder(cx + 27.6, cz + 24, -3, 0, "w");
-  b.spot(cx + 24, -2.95, cz - 10);
-  // Toll plaza & gas station.
-  for (let i = 0; i < 4; i++) {
-    b.block(cx - 2 + i * 6, cz + 44, 1.6, 3, 2.6, Mat.PANEL, 0x30384a);
-    b.decor(cx - 2.8 + i * 6, 2.6, cz + 42.5, cx - 1.2 + i * 6, 2.7, cz + 45.5, Mat.NEON, NEON.green);
-  }
-  b.box(cx + 34, 4.5, cz + 26, cx + 54, 5, cz + 42, Mat.METAL, 0x30303a);
-  for (const [px, pz] of [[36, 28], [52, 28], [36, 40], [52, 40]] as const) b.block(cx + px, cz + pz, 0.5, 0.5, 4.5, Mat.METAL, 0x50505a);
-  b.neonRect(cx + 34, cz + 26, cx + 54, cz + 42, 5, NEON.red, 0.1);
-  b.block(cx + 44, cz + 34, 6, 1.2, 1.6, Mat.PANEL, 0x404858);
-  b.building(cx + 40, cz + 46, 12, 9, { floors: 1, color: 0x3a3440, neon: NEON.red, doors: ["n", "w"], sign: "FUEL-X" });
-  for (let i = 0; i < 4; i++) b.barrel(cx + 37 + i * 4, cz + 31);
-  // Ground-level wrecks.
-  for (let i = 0; i < 8; i++) b.car(cx + rng.range(-50, 15), cz + rng.range(-4, 44), rng.chance(0.5), rng.pick([0x4a4a50, 0x6a2a2a, 0x2a4a6a]));
+  b.spot(cx + 22, H + 0.05, hz + 1);
+  b.lootCrate(cx - 8, hz + 1.5, H);
 }
 
 function outlands(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Terraced ridges.
-  b.hill(cx - 30, cz - 30, 16, 12, 6, Mat.DIRT, 0x4a3e58);
-  b.hill(cx + 26, cz + 28, 14, 18, 7, Mat.DIRT, 0x4a3e58);
-  b.hill(cx - 34, cz + 34, 10, 10, 4, Mat.ROCK, 0x3e3a4a);
-  // Rocks.
-  for (let i = 0; i < 22; i++) {
-    const s = rng.range(1, 3.2);
-    b.block(cx + rng.range(-54, 54), cz + rng.range(-54, 54), s, s * rng.range(0.7, 1.4), s * rng.range(0.5, 1.1), Mat.ROCK, 0x45405a);
-  }
-  // Giant comms tower (landmark) with two platforms.
-  const tx = cx + 4;
-  const tz = cz - 4;
-  for (const [dx, dz] of [[-2, -2], [2, -2], [-2, 2], [2, 2]] as const) b.block(tx + dx, tz + dz, 0.5, 0.5, 42, Mat.METAL, 0x5a5a6a);
-  b.block(tx, tz, 7, 7, 0.4, Mat.METAL, 0x606070, 8);
-  b.block(tx, tz, 7, 7, 0.4, Mat.METAL, 0x606070, 16);
-  b.box(tx - 3.5, 8.4, tz - 3.5, tx + 3.5, 9.4, tz - 3.4, Mat.METAL, 0x707080);
-  b.box(tx - 3.5, 16.4, tz + 3.4, tx + 3.5, 17.4, tz + 3.5, Mat.METAL, 0x707080);
-  b.ladder(tx, tz + 3.5, 0, 8.4, "s");
-  b.ladder(tx + 3.5, tz, 8.4, 16.4, "e");
-  for (let y = 4; y < 42; y += 6) b.neonRect(tx - 2.3, tz - 2.3, tx + 2.3, tz + 2.3, y, NEON.violet, 0.05);
-  b.light(tx, 43, tz, NEON.red, 2);
-  b.spot(tx - 2, 8.45, tz - 2);
-  b.spot(tx + 2, 16.45, tz + 1);
-  // Satellite dish.
-  b.block(cx + 40, cz - 40, 1.2, 1.2, 5, Mat.METAL, 0x606070);
-  b.block(cx + 40, cz - 40, 8, 1, 6, Mat.PANEL, 0xb0b8c8, 5);
-  // Settlement huts.
-  const huts: [number, number][] = [[-44, -2], [-30, 6], [-46, 14], [-20, -12], [40, -8], [44, 8]];
-  for (const [hx, hz] of huts) {
-    b.building(cx + hx - 4.5, cz + hz - 3.5, 9, 7, { floors: 1, color: 0x4a4048, mat: Mat.PANEL, doors: ["s", "e"], neon: rng.pick(NEON_LIST), roofAccess: false, parapet: 0.4 });
-  }
-  b.sign(cx - 44, 3.3, cz + 1.1, 3, 0.8, 2, NEON.violet, "OUTPOST");
-  // Wind turbines (decor towers) and a water tank.
-  for (const [wx, wz] of [[-50, -50], [50, -26], [50, 48]] as const) {
-    b.block(cx + wx, cz + wz, 0.9, 0.9, 24, Mat.METAL, 0xb0b8c8);
-    b.decor(cx + wx - 0.2, 23, cz + wz - 7, cx + wx + 0.2, 24, cz + wz + 7, Mat.PANEL, 0xc8d0e0);
-    b.light(cx + wx, 24.5, cz + wz, NEON.red, 0.8);
-  }
-  b.fence(cx - 54, cz - 16, cx - 14, cz - 15.9);
-  for (let i = 0; i < 5; i++) b.barrel(cx + rng.range(-50, -14), cz + rng.range(-14, 20));
-  b.car(cx - 10, cz + 10, true, 0x5a4a3a);
-  b.car(cx + 14, cz - 30, false, 0x4a4a5a);
+  cityGrid(b, rng, cx, cz, {
+    palette: [0xffd166, 0xff8a80, 0xb2f7ef, 0xffb4a2, 0x8fd3a8, 0xffe8a3, 0x95d5b2], mats: [Mat.PAINT, Mat.PAINT, Mat.WOOD, Mat.BRICK], floors: [1, 2], enterable: 0.75,
+    tower: 0, courtyard: 0.25, hall: 0.1, roofCaps: true, signs: ["BAKERY", "INN", "POST", "MARKET", "TAVERN", "FLOWERS", "GENERAL STORE"],
+  }, {
+    special: (i, j, x0, z0, x1, z1) => {
+      if (i !== 2 || j !== 1) return false;
+      // Village square with the giant red & white radio tower.
+      const tx = (x0 + x1) / 2;
+      const tz = (z0 + z1) / 2;
+      for (const [dx, dz] of [[-2, -2], [2, -2], [-2, 2], [2, 2]] as const)
+        for (let y = 0; y < 42; y += 6) b.block(tx + dx, tz + dz, 0.5, 0.5, 6, Mat.PAINT, (y / 6) % 2 ? 0xffffff : 0xff595e, y);
+      b.block(tx, tz, 7, 7, 0.4, Mat.METAL, 0xdddddd, 8);
+      b.block(tx, tz, 7, 7, 0.4, Mat.METAL, 0xdddddd, 16);
+      b.box(tx - 3.5, 8.4, tz - 3.5, tx + 3.5, 9.4, tz - 3.4, Mat.PAINT, 0xffffff);
+      b.box(tx - 3.5, 16.4, tz + 3.4, tx + 3.5, 17.4, tz + 3.5, Mat.PAINT, 0xffffff);
+      b.ladder(tx, tz + 3.5, 0, 8.4, "s");
+      b.ladder(tx + 3.5, tz, 8.4, 16.4, "e");
+      b.light(tx, 43, tz, BRIGHT.red, 2);
+      b.spot(tx - 2, 8.45, tz - 2);
+      b.spot(tx + 2, 16.45, tz + 1);
+      // Market stalls around the tower.
+      for (const [dx, dz] of [[-8, -8], [8, 8], [-8, 8]] as const) {
+        b.block(tx + dx, tz + dz, 3, 1.2, 1.0, Mat.WOOD, 0xd9a066);
+        b.box(tx + dx - 1.8, 2.6, tz + dz - 1.4, tx + dx + 1.8, 2.8, tz + dz + 1.4, Mat.AWNING, rng.pick(CANDY));
+      }
+      b.lootCrate(tx + 8, tz - 8);
+      return true;
+    },
+  });
 }
 
 function blacklight(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Pagoda landmark in the central courtyard.
+  // Pagoda landmark in a small central courtyard.
+  const tiers = [0xff595e, 0xffca3a, 0xff595e, 0xffca3a, 0xff595e, 0xffca3a];
   for (let i = 0; i < 6; i++) {
     const s = 9 - i * 1.2;
-    b.block(cx, cz, s, s, 3.5, i % 2 ? Mat.PANEL : Mat.FACADE, 0x3a1a28, i * 3.5);
-    b.decor(cx - s / 2 - 0.8, i * 3.5 + 3.2, cz - s / 2 - 0.8, cx + s / 2 + 0.8, i * 3.5 + 3.4, cz + s / 2 + 0.8, Mat.NEON, i % 2 ? NEON.red : NEON.orange);
+    b.block(cx, cz, s, s, 3.5, Mat.PAINT, i % 2 ? 0xfff4e0 : 0xffe0b0, i * 3.5);
+    b.decor(cx - s / 2 - 0.8, i * 3.5 + 3.2, cz - s / 2 - 0.8, cx + s / 2 + 0.8, i * 3.5 + 3.5, cz + s / 2 + 0.8, Mat.PAINT, tiers[i]!);
   }
-  b.light(cx, 22, cz, NEON.red, 1.8);
-  b.sign(cx, 6, cz + 4.6, 4, 1.2, 2, NEON.red, "BLACKLIGHT");
-  // Dense shop grid with narrow lanes (12 m lattice, ~8 m shops).
+  b.light(cx, 22, cz, BRIGHT.red, 1.8);
+  b.sign(cx, 6, cz + 4.6, 4, 1.2, 2, BRIGHT.red, "BLACKLIGHT");
+  // Dense shop grid with lanes (12.5 m lattice).
   for (let gx = -4; gx <= 4; gx++)
     for (let gz = -4; gz <= 4; gz++) {
-      if (Math.abs(gx) <= 1 && Math.abs(gz) <= 1) continue; // courtyard
-      if (gx === 0 || gz === 0) continue; // main cross lanes
-      const x = cx + gx * 12.5 + rng.range(-1, 1);
-      const z = cz + gz * 12.5 + rng.range(-1, 1);
+      if (Math.abs(gx) <= 1 && Math.abs(gz) <= 1) continue;
+      if (gx === 0 || gz === 0) continue;
+      const x = cx + gx * 12.5;
+      const z = cz + gz * 12.5;
       const r = rng.next();
-      const color = rng.pick([0x2a1e2e, 0x30222a, 0x1e2230, 0x2a2a22]);
-      const neon = rng.pick(NEON_LIST);
-      if (r < 0.42) {
-        b.building(x - 4.75, z - 4, 9.5, 8, { floors: rng.int(1, 2), color, neon, doors: [rng.pick(["n", "s"] as const), rng.pick(["e", "w"] as const)], sign: rng.pick(SIGN_WORDS) });
-      } else if (r < 0.75) {
-        b.block(x, z, 8, 8, rng.int(5, 12), Mat.FACADE, color);
-        b.sign(x, 3.2, z + 4.08, 5, 1, 2, neon, rng.pick(SIGN_WORDS));
-        b.sign(x + 4.08, 6, z, 0.9, 3, 0, rng.pick(NEON_LIST), rng.pick(SIGN_WORDS), "strip");
+      const color = rng.pick(CANDY);
+      if (r < 0.4) {
+        b.building(x - 5, z - 5, 10, 10, { floors: rng.int(2, 3), color, doors: [rng.pick(["n", "s"] as const), rng.pick(["e", "w"] as const)], sign: rng.pick(SIGN_WORDS) });
+      } else if (r < 0.65) {
+        b.building(x - 4.75, z - 4, 9.5, 8, { floors: 1, color, doors: [rng.pick(["n", "s"] as const), rng.pick(["e", "w"] as const)], sign: rng.pick(SIGN_WORDS) });
+      } else if (r < 0.9) {
+        const h = rng.int(5, 12);
+        b.block(x, z, 9, 9, h, Mat.FACADE, color);
+        shopSign(b, rng, x, 3.2, z + 4.58, 5, 2);
+        b.decor(x - 3, 2.6, z + 4.5, x + 3, 2.75, z + 5.7, Mat.AWNING, bright(rng));
+        if (h <= 12) b.roofs.push({ x0: x - 4.5, z0: z - 4.5, x1: x + 4.5, z1: z + 4.5, y: h });
       } else {
-        // Open stall with canopy (canopy is solid — climbable from the counter).
-        b.block(x, z - 1.5, 5, 1.2, 1.1, Mat.WOOD, 0x5a3a2a);
-        b.box(x - 3, 3, z - 3.5, x + 3, 3.2, z + 1, Mat.PANEL, rng.pick([0x8a1f3a, 0x1f6a8a, 0x8a6a1f]));
-        b.decor(x - 3, 2.9, z - 3.55, x + 3, 3.0, z - 3.45, Mat.NEON, neon);
-        b.crate(x + 1.5, z + 2, 1);
-        b.light(x, 2.6, z - 1.5, neon, 0.6);
+        b.block(x, z - 1.5, 5, 1.2, 1.1, Mat.WOOD, 0xd9a066);
+        b.box(x - 3, 3, z - 3.5, x + 3, 3.2, z + 1, Mat.AWNING, bright(rng));
+        b.crate(x + 1.5, z + 2, 1, 0, bright(rng));
+        b.light(x, 2.6, z - 1.5, 0xffd59a, 0.6);
         b.spot(x, 0.05, z + 0.5);
+        b.lootCrate(x - 1.8, z + 1.8);
       }
     }
-  // Hanging lantern lines over the lanes (decor).
-  for (let u = -50; u <= 50; u += 7) {
-    b.decor(cx + u, 5.5, cz - 0.05, cx + u + 0.3, 5.8, cz + 0.05, Mat.NEON, rng.pick([NEON.red, NEON.orange, NEON.magenta]));
-    b.decor(cx - 0.05, 5.5, cz + u, cx + 0.05, 5.8, cz + u + 0.3, Mat.NEON, rng.pick([NEON.red, NEON.orange, NEON.magenta]));
+  for (let u = -50; u <= 50; u += 5) {
+    b.decor(cx + u, 5.5, cz - 0.15, cx + u + 0.35, 5.9, cz + 0.15, Mat.NEON, rng.pick([BRIGHT.red, BRIGHT.orange, BRIGHT.yellow, BRIGHT.pink]));
+    b.decor(cx - 0.15, 5.5, cz + u, cx + 0.15, 5.9, cz + u + 0.35, Mat.NEON, rng.pick([BRIGHT.red, BRIGHT.orange, BRIGHT.yellow, BRIGHT.pink]));
   }
-  for (let i = 0; i < 12; i++) b.crate(cx + rng.pick([-1, 1]) * rng.range(3, 50), cz + rng.range(-1.8, 1.8), rng.range(0.9, 1.3));
-  for (let i = 0; i < 6; i++) b.barrel(cx + rng.range(-1.8, 1.8), cz + rng.pick([-1, 1]) * rng.range(8, 50));
-  for (let i = 0; i < 4; i++) b.lamp(cx + rng.pick([-1, 1]) * rng.range(12, 50), cz + 2.2, rng.pick(NEON_LIST), 4.5);
+  for (let i = 0; i < 10; i++) b.crate(cx + rng.pick([-1, 1]) * rng.range(3, 50), cz + rng.range(-1.8, 1.8), rng.range(0.9, 1.3), 0, bright(rng));
+  for (let i = 0; i < 4; i++) b.barrel(cx + rng.range(-1.8, 1.8), cz + rng.pick([-1, 1]) * rng.range(8, 50));
+  for (let i = 0; i < 4; i++) b.lamp(cx + rng.pick([-1, 1]) * rng.range(12, 50), cz + 2.2, 0xffd59a, 4.5);
 }
 
 function skyrail(b: MapBuilder, cx: number, cz: number, rng: Rng): void {
-  // Elevated viaduct running north-south at y=7 with platforms.
-  const vx = cx + 10;
-  const H = 7;
-  b.box(vx - 6, H - 0.6, cz - 64, vx + 6, H, cz + 64, Mat.CONCRETE, 0x3c3c4a);
-  for (let z = cz - 58; z <= cz + 58; z += 14) b.block(vx, z, 5, 2, H - 0.6, Mat.CONCRETE, 0x34343e);
-  // Rails.
-  for (const rx of [-3.5, -2, 2, 3.5]) b.decor(vx + rx - 0.08, H, cz - 64, vx + rx + 0.08, H + 0.15, cz + 64, Mat.METAL, 0x9aa0b4);
-  b.decor(vx - 0.1, H, cz - 64, vx + 0.1, H + 0.05, cz + 64, Mat.NEON, NEON.cyan);
-  // Platforms on both sides of the track around the station.
-  b.box(vx - 12, H - 0.6, cz - 24, vx - 6, H, cz + 24, Mat.CONCRETE, 0x4a4a58);
-  b.box(vx + 6, H - 0.6, cz - 24, vx + 12, H, cz + 24, Mat.CONCRETE, 0x4a4a58);
-  b.decor(vx - 6.3, H, cz - 24, vx - 6, H + 0.04, cz + 24, Mat.NEON, NEON.yellow);
-  b.decor(vx + 6, H, cz - 24, vx + 6.3, H + 0.04, cz + 24, Mat.NEON, NEON.yellow);
-  for (let z = cz - 20; z <= cz + 20; z += 10) {
-    b.block(vx - 9, z, 0.5, 0.5, 4, Mat.METAL, 0x606070, H);
-    b.block(vx + 9, z, 0.5, 0.5, 4, Mat.METAL, 0x606070, H);
+  cityGrid(b, rng, cx, cz, {
+    palette: [0xffe8a3, 0x80cbe8, 0xff8a80, 0xb2f7ef, 0xffffff, 0x8fd3a8], mats: [Mat.FACADE, Mat.BRICK, Mat.PAINT], floors: [2, 3], enterable: 0.6, tower: 0.25,
+    courtyard: 0.15, hall: 0.06, signs: ["PIXEL CAFE", "HOTEL SUNNY", "TICKETS", "NEWS", "BUBBLE TEA", "LOCKERS", "RAIL OPS"],
+  }, {
+    special: (i, j, x0, z0, x1, z1) => {
+      if (i !== 1 || j !== 1) return false;
+      // Grand concourse hall.
+      b.building(x0, z0, x1 - x0, z1 - z0, { floors: 2, color: 0xffe8a3, doors: ["n", "s", "e", "w"], sign: "SKYRAIL CENTRAL", rooms: false });
+      for (let k = 0; k < 4; k++) b.block(x0 + 6 + (k % 2) * 11, z0 + 8 + Math.floor(k / 2) * 8, 3, 0.8, 0.9, Mat.WOOD, 0xd9a066);
+      return true;
+    },
+  });
+  // Elevated rail viaduct over the central north-south street.
+  const vx = cx;
+  const H = 8;
+  const ve = 51.5; // stairs end ~3 m short of the district wall
+  b.box(vx - 3.5, H - 0.6, cz - ve, vx + 3.5, H, cz + ve, Mat.CONCRETE, 0xe5e0d5);
+  for (let z = cz - 49; z <= cz + 49; z += 14) {
+    b.block(vx - 2.9, z, 0.8, 0.8, H - 0.6, Mat.CONCRETE, 0xd8d2c4);
+    b.block(vx + 2.9, z, 0.8, 0.8, H - 0.6, Mat.CONCRETE, 0xd8d2c4);
   }
-  b.box(vx - 12.5, H + 4, cz - 24, vx - 5.5, H + 4.3, cz + 24, Mat.PANEL, 0x30344a);
-  b.box(vx + 5.5, H + 4, cz - 24, vx + 12.5, H + 4.3, cz + 24, Mat.PANEL, 0x30344a);
-  for (let z = cz - 22; z <= cz + 22; z += 11) {
-    b.block(vx - 10, z, 2, 0.6, 1, Mat.PANEL, 0x50566a, H);
-    b.block(vx + 10, z + 5, 2, 0.6, 1, Mat.PANEL, 0x50566a, H);
-  }
-  b.sign(vx - 12.55, H + 2.6, cz, 10, 1.6, 1, NEON.white, "SKYRAIL CENTRAL");
-  b.sign(vx + 12.55, H + 2.6, cz, 10, 1.6, 0, NEON.cyan, "LINE 7 — ORBITAL");
-  b.spot(vx - 9, H + 0.05, cz - 10);
-  b.spot(vx + 9, H + 0.05, cz + 12);
-  // Trains parked on the track (cover on the viaduct).
-  b.block(vx - 1.6, cz - 6, 3, 18, 3.4, Mat.METAL, 0xc8ccd8, H);
-  b.decor(vx - 3.15, H + 1.6, cz - 15, vx - 3.05, H + 1.9, cz + 3, Mat.NEON, NEON.cyan);
-  b.block(vx + 1.6, cz + 30, 3, 16, 3.4, Mat.METAL, 0xc8ccd8, H);
-  b.decor(vx + 3.05, H + 1.6, cz + 22, vx + 3.15, H + 1.9, cz + 38, Mat.NEON, NEON.magenta);
-  // Stairs up to platforms (west side from the concourse, east side from the street).
-  b.stairs(vx - 20.4, cz - 22, "x", 1, 2.5, 0, H, Mat.CONCRETE, 0x50505c);
-  b.stairs(vx + 20.4, cz + 20, "x", -1, 2.5, 0, H, Mat.CONCRETE, 0x50505c);
-  b.ladder(vx - 12, cz + 18, 0, H, "w");
-  b.ladder(vx + 6, cz + 50, 0, H, "e");
-  // Concourse hall (enterable, 2 floors).
-  b.building(cx - 46, cz - 14, 26, 18, { floors: 2, color: 0x262c40, neon: NEON.white, doors: ["e", "s", "n"], sign: "SKYRAIL" });
-  // Clock tower landmark.
-  b.block(cx - 33, cz + 16, 5, 5, 30, Mat.FACADE, 0x22283a);
-  b.sign(cx - 33, 26, cz + 18.55, 4, 4, 2, NEON.white, "07:77", "holo");
-  b.light(cx - 33, 31, cz + 16, NEON.white, 1.4);
-  // Underpass ticket gates and waiting area.
-  for (let z = cz - 10; z <= cz + 10; z += 4) b.block(vx - 3.5, z, 0.4, 1.6, 1.1, Mat.PANEL, 0x40465a);
-  for (let i = 0; i < 6; i++) b.block(cx + rng.range(-44, -16), cz + rng.range(10, 50), 3, 0.8, 0.9, Mat.METAL, 0x50566a);
-  b.building(cx + 32, cz - 50, 14, 10, { floors: 2, color: 0x2a2a3a, neon: NEON.cyan, doors: ["w", "s"], sign: "RAILYARD OPS" });
-  b.building(cx - 50, cz + 34, 12, 12, { floors: 2, color: 0x2e2a3a, neon: NEON.magenta, doors: ["e", "n"], sign: "HOTEL ORBIT" });
-  for (let i = 0; i < 6; i++) b.car(cx + rng.range(34, 50), cz + rng.range(-30, 50), false, rng.pick([0xc8c8d0, 0x2a2a3a, 0x8a1f3a]));
-  for (let i = 0; i < 5; i++) b.barrel(cx + rng.range(-50, 50), cz + rng.range(30, 55));
+  for (const rx of [-1.6, -0.6, 0.6, 1.6]) b.decor(vx + rx - 0.06, H, cz - ve, vx + rx + 0.06, H + 0.12, cz + ve, Mat.METAL, 0x9aa5b1);
+  b.box(vx - 3.5, H, cz - ve, vx - 3.3, H + 1, cz + ve, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+  b.box(vx + 3.3, H, cz - ve, vx + 3.5, H + 1, cz + ve, Mat.PAINT, 0xffffff, BoxFlag.BULLET_PASS);
+  b.block(vx, cz - 20, 2.6, 16, 3.2, Mat.PAINT, 0xffffff, H);
+  b.decor(vx - 1.35, H + 1.5, cz - 28, vx - 1.29, H + 2.1, cz - 12, Mat.PAINT, 0x4cc9f0);
+  b.block(vx, cz + 30, 2.6, 14, 3.2, Mat.PAINT, 0xffffff, H);
+  b.decor(vx + 1.29, H + 1.5, cz + 23, vx + 1.35, H + 2.1, cz + 37, Mat.PAINT, 0xff70a6);
+  b.stairs(vx, cz - ve - 9.6, "z", 1, 3, 0, H, Mat.TILE, 0xe5e0d5);
+  b.stairs(vx, cz + ve + 9.6, "z", -1, 3, 0, H, Mat.TILE, 0xe5e0d5);
+  b.ladder(vx - 3.5, cz + 8, 0, H, "w");
+  b.ladder(vx + 3.5, cz - 8, 0, H, "e");
+  b.spot(vx, H + 0.05, cz + 5);
+  b.lootCrate(vx - 1.5, cz + 12, H);
+  b.sign(vx - 3.6, H + 2.5, cz, 6, 1.4, 1, BRIGHT.sky, "LINE 7");
 }
 
 function bay(b: MapBuilder): void {
-  // Decorative lighthouse and buoys in the electrified bay (not reachable).
-  b.decor(150, -2, 150, 156, 26, 156, Mat.PANEL, 0xd0d4dc);
-  b.decor(149, 26, 149, 157, 29, 157, Mat.NEON, NEON.yellow);
-  b.light(153, 28, 153, NEON.yellow, 2.5);
-  for (let i = 0; i < 6; i++) b.light(80 + i * 18, -0.8, 90 + (i % 3) * 30, NEON.cyan, 0.6);
+  // Lighthouse and buoys in the bay (not reachable).
+  for (let i = 0; i < 6; i++) b.decor(150, -2 + i * 4.5, 150, 156, 2.5 + i * 4.5, 156, Mat.PAINT, i % 2 ? 0xffffff : 0xff595e);
+  b.decor(149, 25, 149, 157, 28, 157, Mat.NEON, BRIGHT.yellow);
+  b.light(153, 27, 153, BRIGHT.yellow, 2.5);
+  for (let i = 0; i < 6; i++) b.decor(80 + i * 18, -1.5, 90 + (i % 3) * 30, 81 + i * 18, -0.4, 91 + (i % 3) * 30, Mat.PAINT, 0xff595e);
   // Long pier from Blacklight Market (playable during BR).
-  b.box(118, -1, 64, 126, 0, 104, Mat.WOOD, 0x4a3a2e);
-  b.block(122, 102, 6, 2, 1.2, Mat.METAL, 0x50566a);
-  b.light(122, 2, 103, NEON.cyan, 0.8);
+  b.box(118, -1, 64, 126, 0, 104, Mat.WOOD, 0xc49a6c);
+  b.block(122, 102, 6, 2, 1.2, Mat.PAINT, 0x4cc9f0);
+  b.bench(120, 90, false);
+  b.light(122, 2, 103, 0xffd59a, 0.8);
   b.spot(122, 0.05, 96);
 }

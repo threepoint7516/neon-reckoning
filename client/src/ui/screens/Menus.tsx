@@ -10,12 +10,13 @@ import { online } from "../../net/online";
 import { serverUrl } from "../../net/connection";
 import { getTextures } from "../../game/render/textures";
 import { startPractice } from "./Practice";
+import { LevelPanel } from "../components/LevelPanel";
 
 function Logo({ small = false }: { small?: boolean }) {
   const s = useSettings();
   return (
     <div className={`logo ${s.reduceMotion ? "" : "glitch"}`} style={small ? { fontSize: 40 } : undefined} aria-label={GAME_TITLE}>
-      Neon
+      <span className="l1">Neon</span>
       <span className="l2">Reckoning</span>
     </div>
   );
@@ -24,7 +25,7 @@ function Logo({ small = false }: { small?: boolean }) {
 /** Startup: generate the world + textures, then wait for a click (unlocks audio). */
 export function BootScreen() {
   const [progress, setProgress] = useState(0);
-  const [stage, setStage] = useState("Booting neural interface");
+  const [stage, setStage] = useState("Warming up");
   const [ready, setReady] = useState(false);
   const [webgl, setWebgl] = useState(true);
   useEffect(() => {
@@ -85,7 +86,7 @@ export function BootScreen() {
   return (
     <div className="screen boot" onClick={enter} style={{ cursor: ready ? "pointer" : "default" }}>
       <Logo />
-      <div className="tagline">A free-to-play cyberpunk arena shooter</div>
+      <div className="tagline">A free-to-play arena shooter in a toy-bright city that never sleeps</div>
       <div className="progress">
         <i style={{ width: `${progress * 100}%` }} />
       </div>
@@ -100,8 +101,8 @@ export function BootScreen() {
         </div>
       )}
       {ready && webgl && (
-        <div className="blink glow-cyan" style={{ marginTop: 30, letterSpacing: "0.4em", fontWeight: 700 }}>
-          CLICK OR PRESS ENTER TO JACK IN
+        <div className="blink" style={{ marginTop: 30, letterSpacing: "0.2em", fontWeight: 900, fontSize: 20, color: "#fff", textShadow: "0 3px 0 #1f2a44" }}>
+          CLICK OR PRESS ENTER TO PLAY
         </div>
       )}
       <div className="footer-note">No account. No tracking. Your callsign lives only in this tab.</div>
@@ -211,6 +212,7 @@ export function MainMenu() {
         </div>
         <div className="col" style={{ gap: 18 }}>
           <Callsign />
+          <LevelPanel />
           <div className="panel">
             <h3>Today's challenges</h3>
             {challenges.map((c) => (
@@ -413,7 +415,11 @@ export function PrivacyScreen() {
               <b>Session challenges & stats</b> are kept in this tab's memory and vanish when you close it.
             </li>
             <li>
-              <b>Settings</b> are only saved (to this browser's localStorage) if you switch on "Remember these settings". They contain no identity or stats.
+              <b>Level, XP and weapon finish</b> live in this tab's memory. Only if you switch on "Remember my level, XP and weapon finish" (Settings → Storage) are two
+              values saved in this browser's localStorage: your total XP and the camo you picked. They never leave your device, and switching the option off deletes them.
+            </li>
+            <li>
+              <b>Settings</b> are only saved (to this browser's localStorage) if you switch on "Remember these settings". They contain no identity or match stats.
             </li>
           </ul>
         </div>

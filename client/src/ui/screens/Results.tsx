@@ -1,10 +1,12 @@
-import { useMemo } from "react";
-import { MODE_INFO, WEAPONS } from "@neon/shared";
+import { useEffect, useMemo } from "react";
+import { MODE_INFO, WEAPONS, isSoloMode } from "@neon/shared";
 import { go, store, useStore } from "../../state/store";
 import { challenges, recordResults } from "../../state/session";
 import { MEDAL_NAMES } from "../../game/hud";
 import { online } from "../../net/online";
 import { startPractice } from "./Practice";
+import { titleFor, useProgress, xpToNext } from "../../state/progress";
+import { audio } from "../../audio/audio";
 
 const recorded = new WeakMap<object, ReturnType<typeof recordResults>>();
 
@@ -100,7 +102,7 @@ export function ResultsScreen() {
                     {r.name}
                     {r.bot && <span className="tag-bot">BOT</span>}
                     {r.id === meta.you && <span className="tag-you">YOU</span>}
-                    {!br && results.mode !== "ffa" && results.mode !== "training" && <span className="muted small"> · {r.team === me?.team ? "ally" : "enemy"}</span>}
+                    {!br && !isSoloMode(results.mode) && <span className="muted small"> · {r.team === me?.team ? "ally" : "enemy"}</span>}
                   </td>
                   <td className="num">{r.kills}</td>
                   <td className="num">{r.deaths}</td>
@@ -112,7 +114,12 @@ export function ResultsScreen() {
               ))}
             </tbody>
           </table>
-          {results.teamScores.length > 0 && !br && (
+          {results.mode === "payload" && results.teamScores.length > 0 ? (
+            <div className="row" style={{ marginTop: 12 }}>
+              <span className={`chip ${win ? "good" : "bad"}`}>Payload pushed {results.teamScores[0]}%</span>
+              <span className="muted small">{me?.team === 0 ? "You attacked" : "You defended"}</span>
+            </div>
+          ) : results.teamScores.length > 0 && !br && (
             <div className="row" style={{ marginTop: 12 }}>
               {results.teamScores.map((s, i) => (
                 <span key={i} className={`chip ${i === me?.team ? "good" : "bad"}`}>
@@ -123,6 +130,7 @@ export function ResultsScreen() {
           )}
         </div>
         <div className="col" style={{ gap: 18 }}>
+          <XpPanel />
           <div className="panel">
             <h3>Your performance</h3>
             {me ? (
@@ -178,6 +186,52 @@ export function ResultsScreen() {
           </div>
           <div className="small muted">Results exist only in this tab — nothing is saved to a profile because there are no profiles.</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** XP earned this match, the level bar and anything it unlocked. */
+function XpPanel() {
+  const p = useProgress();
+  const m = p.match;
+  const total = m.combat + m.bonuses.reduce((a, b) => a + b.xp, 0);
+  const gained = p.level - m.startLevel;
+  useEffect(() => {
+    if (gained > 0) audio.levelUp();
+  }, [gained]);
+  const need = xpToNext(p.level);
+  return (
+    <div className="panel xp-panel">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+        <h3 style={{ margin: 0 }}>+{total.toLocaleString()} XP</h3>
+        <span className="small">
+          Level <b>{p.level}</b> · {titleFor(p.level)}
+        </span>
+      </div>
+      <div className="bar xp" style={{ margin: "8px 0 10px" }}>
+        <i className="grow" style={{ width: `${(p.into / need) * 100}%` }} />
+      </div>
+      <div className="xp-rows small">
+        <div>
+          <span>Combat (score)</span>
+          <b>+{m.combat}</b>
+        </div>
+        {m.bonuses.map((b, i) => (
+          <div key={i}>
+            <span>{b.label}</span>
+            <b>+{b.xp}</b>
+          </div>
+        ))}
+      </div>
+      {gained > 0 && (
+        <div className="levelup-box">
+          <b>LEVEL UP{gained > 1 ? ` ×${gained}` : ""}!</b>
+          {m.unlocked.length > 0 ? <span> Unlocked: {m.unlocked.join(", ")}. Pick finishes on the main menu.</span> : <span> Keep going — new finishes unlock as you level.</span>}
+        </div>
+      )}
+      <div className="small muted" style={{ marginTop: 6 }}>
+        {need - p.into} XP to level {p.level + 1}.
       </div>
     </div>
   );

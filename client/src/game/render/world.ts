@@ -3,12 +3,14 @@ import { Mat, BoxFlag, REGION } from "@neon/shared";
 import type { Box, MapData, MatId, Sign } from "@neon/shared";
 import { getTextures, textTexture } from "./textures";
 import type { Quality } from "../../state/settings";
+import type { Lighting } from "./sky";
 
 /** UV tile size in metres per material. */
 const TILE: Partial<Record<MatId, [number, number]>> = {
   [Mat.CONCRETE]: [4, 4], [Mat.METAL]: [3, 3], [Mat.FACADE]: [8, 8], [Mat.CONTAINER]: [3, 2.6], [Mat.ASPHALT]: [10, 10],
-  [Mat.GROUND]: [10, 10], [Mat.WOOD]: [2, 2], [Mat.DIRT]: [6, 6], [Mat.PANEL]: [4, 4], [Mat.ROCK]: [5, 5], [Mat.FENCE]: [1, 1],
-  [Mat.TRIM]: [1, 1], [Mat.GLASS]: [2, 2], [Mat.NEON]: [1, 1], [Mat.BARRIER]: [6, 6],
+  [Mat.GROUND]: [10, 10], [Mat.WOOD]: [2, 2], [Mat.DIRT]: [6, 6], [Mat.PANEL]: [4, 4], [Mat.ROCK]: [5, 5], [Mat.FENCE]: [2, 2],
+  [Mat.TRIM]: [1, 1], [Mat.GLASS]: [2, 2], [Mat.NEON]: [1, 1], [Mat.BARRIER]: [6, 6], [Mat.BRICK]: [2.4, 1.2], [Mat.TILE]: [1.6, 1.6],
+  [Mat.GRASS]: [3, 3], [Mat.LEAF]: [2, 2], [Mat.AWNING]: [1.6, 1.6], [Mat.PAINT]: [3, 3], [Mat.PAD]: [1.7, 1.7],
 };
 
 interface Arrays {
@@ -40,8 +42,7 @@ function pushBox(a: Arrays, b: Box, tile: [number, number]): void {
   faces.push([[0, 0, -1], [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [[-x1, y0], [-x0, y0], [-x0, y1], [-x1, y1]]]);
   for (const [n, vs, uvs] of faces) {
     const base = a.pos.length / 3;
-    // Subtle per-face shading variation keeps flat-coloured boxes readable.
-    const shade = n[1] === 1 ? 1.05 : n[0] !== 0 ? 0.92 : 1;
+    const shade = n[1] === 1 ? 1.04 : n[0] !== 0 ? 0.95 : 1;
     for (let i = 0; i < 4; i++) {
       a.pos.push(vs[i]![0]!, vs[i]![1]!, vs[i]![2]!);
       a.nor.push(n[0]!, n[1]!, n[2]!);
@@ -69,9 +70,8 @@ const fogFrag = THREE.ShaderChunk.fog_pars_fragment;
 
 export interface WorldView {
   group: THREE.Group;
-  /** Meshes used for client-side visual raycasts (tracers, impacts). */
   materials: Map<MatId, THREE.Material>;
-  update(t: number, cam: THREE.Vector3): void;
+  update(t: number, cam: THREE.Vector3, light: Lighting): void;
   setArena(b: { minX: number; minZ: number; maxX: number; maxZ: number } | null): void;
   dispose(): void;
 }
@@ -82,44 +82,68 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
   group.name = "world";
   const disposables: { dispose(): void }[] = [];
 
-  const std = (o: THREE.MeshStandardMaterialParameters) => {
-    const m = new THREE.MeshStandardMaterial({ vertexColors: true, envMap, envMapIntensity: 0.9, ...o });
+  // Cartoon look: toon shading with crisp light bands, bright vertex colours.
+  const toon = (o: THREE.MeshToonMaterialParameters) => {
+    const m = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: T.toon, ...o });
     disposables.push(m);
     return m;
   };
   const materials = new Map<MatId, THREE.Material>();
-  materials.set(Mat.CONCRETE, std({ map: T.concrete, roughness: 0.88, metalness: 0.05 }));
-  materials.set(Mat.METAL, std({ map: T.metal, roughness: 0.42, metalness: 0.75 }));
-  materials.set(Mat.FACADE, std({ map: T.facade, roughness: 0.55, metalness: 0.35, emissiveMap: T.facadeEmissive, emissive: new THREE.Color(1.6, 1.5, 1.5) }));
-  materials.set(Mat.CONTAINER, std({ map: T.container, roughness: 0.6, metalness: 0.45 }));
-  materials.set(Mat.ASPHALT, std({ map: T.asphalt, roughness: 0.5, metalness: 0.15, envMapIntensity: 0.55 }));
+  materials.set(Mat.CONCRETE, toon({ map: T.concrete }));
+  materials.set(Mat.METAL, toon({ map: T.metal }));
+  const facade = toon({ map: T.facade, emissiveMap: T.facadeEmissive, emissive: new THREE.Color(1, 0.95, 0.85), emissiveIntensity: 0 });
+  materials.set(Mat.FACADE, facade);
+  materials.set(Mat.CONTAINER, toon({ map: T.container }));
+  materials.set(Mat.ASPHALT, toon({ map: T.asphalt }));
   materials.set(Mat.GROUND, materials.get(Mat.ASPHALT)!);
-  materials.set(Mat.WOOD, std({ map: T.wood, roughness: 0.85, metalness: 0 }));
-  materials.set(Mat.DIRT, std({ map: T.dirt, roughness: 0.95, metalness: 0 }));
-  materials.set(Mat.PANEL, std({ map: T.panel, roughness: 0.5, metalness: 0.55 }));
-  materials.set(Mat.ROCK, std({ map: T.rock, roughness: 0.95, metalness: 0 }));
-  materials.set(Mat.TRIM, std({ roughness: 0.4, metalness: 0.8 }));
-  const glass = new THREE.MeshStandardMaterial({ vertexColors: true, transparent: true, opacity: 0.32, roughness: 0.05, metalness: 0.9, envMap, depthWrite: false });
+  materials.set(Mat.WOOD, toon({ map: T.wood }));
+  materials.set(Mat.DIRT, toon({ map: T.dirt }));
+  materials.set(Mat.PANEL, toon({ map: T.panel }));
+  materials.set(Mat.ROCK, toon({ map: T.rock }));
+  materials.set(Mat.TRIM, toon({}));
+  materials.set(Mat.BRICK, toon({ map: T.brick }));
+  materials.set(Mat.TILE, toon({ map: T.tile }));
+  materials.set(Mat.GRASS, toon({ map: T.grass }));
+  materials.set(Mat.LEAF, toon({ map: T.leaf }));
+  materials.set(Mat.AWNING, toon({ map: T.awning, side: THREE.DoubleSide }));
+  materials.set(Mat.PAINT, toon({ map: T.paint }));
+  const glass = new THREE.MeshStandardMaterial({ vertexColors: true, transparent: true, opacity: 0.45, roughness: 0.1, metalness: 0.2, envMap, depthWrite: false });
   materials.set(Mat.GLASS, glass);
-  const fence = new THREE.MeshStandardMaterial({ map: T.fence, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true, roughness: 0.5, metalness: 0.6, transparent: false });
+  const fence = new THREE.MeshToonMaterial({ map: T.fence, alphaTest: 0.5, side: THREE.DoubleSide, vertexColors: true, gradientMap: T.toon });
   materials.set(Mat.FENCE, fence);
-  const neon = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, color: new THREE.Color(2.6, 2.6, 2.6) });
+  const neon = new THREE.MeshBasicMaterial({ vertexColors: true, toneMapped: false, color: new THREE.Color(1, 1, 1) });
   materials.set(Mat.NEON, neon);
   const barrier = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uNight: { value: 0 } },
     vertexShader: `varying vec3 vW; void main(){ vec4 w = modelMatrix*vec4(position,1.0); vW=w.xyz; gl_Position=projectionMatrix*viewMatrix*w; }`,
-    fragmentShader: `uniform float uTime; varying vec3 vW;
+    fragmentShader: `uniform float uTime; uniform float uNight; varying vec3 vW;
       void main(){
-        float u = (abs(fract(vW.x*0.25)-0.5) < 0.02 || abs(fract(vW.z*0.25)-0.5)<0.02) ? 1.0 : 0.0;
-        float h = abs(fract(vW.y*0.25 - uTime*0.15)-0.5) < 0.015 ? 1.0 : 0.0;
-        float fade = smoothstep(26.0, 0.0, vW.y) ;
-        float a = (0.06 + 0.35*max(u,h)) * fade;
-        gl_FragColor = vec4(vec3(0.2,0.9,1.0)*a*2.0, a);
+        float u = (abs(fract(vW.x*0.25)-0.5) < 0.03 || abs(fract(vW.z*0.25)-0.5)<0.03) ? 1.0 : 0.0;
+        float h = abs(fract(vW.y*0.25 - uTime*0.15)-0.5) < 0.02 ? 1.0 : 0.0;
+        float fade = smoothstep(26.0, 0.0, vW.y);
+        float a = (0.05 + 0.3*max(u,h)) * fade * (0.6 + 0.6*uNight);
+        gl_FragColor = vec4(vec3(0.45,0.85,1.0)*a*1.6, a);
       }`,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
   materials.set(Mat.BARRIER, barrier);
-  disposables.push(glass, fence, neon, barrier);
+  // Jump pads: bright discs with chevrons that pulse upward.
+  const pad = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `varying vec3 vW; varying vec3 vN; void main(){ vec4 w=modelMatrix*vec4(position,1.0); vW=w.xyz; vN=normal; gl_Position=projectionMatrix*viewMatrix*w; }`,
+    fragmentShader: `uniform float uTime; varying vec3 vW; varying vec3 vN;
+      void main(){
+        vec2 c = fract(vW.xz / 1.7 + 0.5) - 0.5;
+        float r = length(c);
+        float ring = smoothstep(0.02,0.0,abs(fract(r*4.0 - uTime*1.5)-0.5)-0.18);
+        vec3 base = mix(vec3(0.1,0.85,0.55), vec3(0.95,1.0,0.6), ring);
+        if (vN.y < 0.5) base = vec3(0.15,0.7,0.5);
+        gl_FragColor = vec4(base*1.3, 1.0);
+      }`,
+    toneMapped: false,
+  });
+  materials.set(Mat.PAD, pad);
+  disposables.push(glass, fence, neon, barrier, pad);
 
   // Merge boxes per (chunk × material) for few draw calls with frustum culling.
   const CH = 64;
@@ -136,17 +160,17 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
   for (const { mat, arrays } of buckets.values()) {
     const geo = toGeometry(arrays);
     disposables.push(geo);
-    const mesh = new THREE.Mesh(geo, materials.get(mat)!);
+    const mesh = new THREE.Mesh(geo, materials.get(mat) ?? materials.get(Mat.PAINT)!);
     mesh.matrixAutoUpdate = false;
-    if (shadows && mat !== Mat.NEON && mat !== Mat.BARRIER && mat !== Mat.GLASS) {
-      mesh.castShadow = true;
+    if (shadows && mat !== Mat.NEON && mat !== Mat.BARRIER && mat !== Mat.GLASS && mat !== Mat.PAD) {
+      mesh.castShadow = mat !== Mat.GRASS && mat !== Mat.ASPHALT;
       mesh.receiveShadow = true;
     }
     if (mat === Mat.GLASS || mat === Mat.BARRIER) mesh.renderOrder = 2;
     group.add(mesh);
   }
 
-  // Ladders: rails and rungs.
+  // Ladders: yellow rails and rungs.
   {
     const a = newArrays();
     for (const l of map.ladders) {
@@ -159,12 +183,12 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
           : ({ minX: mid - 0.04, maxX: mid + 0.04, minY: l.minY, maxY: top + 1, minZ: u - 0.04, maxZ: u + 0.04 } as Box);
       const u0 = alongX ? l.minX + 0.1 : l.minZ + 0.1;
       const u1 = alongX ? l.maxX - 0.1 : l.maxZ - 0.1;
-      for (const u of [u0, u1]) pushBox(a, { ...rail(u), mat: Mat.METAL, color: 0xffb21f, flags: BoxFlag.DECOR }, [1, 1]);
+      for (const u of [u0, u1]) pushBox(a, { ...rail(u), mat: Mat.METAL, color: 0xffca3a, flags: BoxFlag.DECOR }, [1, 1]);
       for (let y = l.minY + 0.3; y < top + 0.6; y += 0.35) {
         const rung = alongX
           ? { minX: u0, maxX: u1, minY: y, maxY: y + 0.05, minZ: mid - 0.03, maxZ: mid + 0.03 }
           : { minX: mid - 0.03, maxX: mid + 0.03, minY: y, maxY: y + 0.05, minZ: u0, maxZ: u1 };
-        pushBox(a, { ...rung, mat: Mat.METAL, color: 0xd09020, flags: BoxFlag.DECOR }, [1, 1]);
+        pushBox(a, { ...rung, mat: Mat.METAL, color: 0xffd166, flags: BoxFlag.DECOR }, [1, 1]);
       }
     }
     if (a.pos.length) {
@@ -174,34 +198,33 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
     }
   }
 
-  // Signs: two atlases (horizontal / vertical) rendered additively.
-  group.add(buildSigns(map.signs.filter((s) => s.kind !== "holo"), disposables));
+  const signs = buildSigns(map.signs.filter((s) => s.kind !== "holo"), disposables);
+  group.add(signs.group);
   const holo = buildHolos(map.signs.filter((s) => s.kind === "holo"), disposables);
   group.add(holo.group);
-
-  // Light glows (cheap "volumetric" halos).
   const glow = buildGlows(map, disposables, quality);
   group.add(glow);
 
-  // Water.
+  // Water: bright turquoise by day, deep blue with glints at night.
   const waterMat = new THREE.ShaderMaterial({
-    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 } }]),
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uNight: { value: 0 } }]),
     vertexShader: `${fogVert}
       varying vec3 vW;
       void main(){ vec4 w=modelMatrix*vec4(position,1.0); vW=w.xyz; vec4 mvPosition=viewMatrix*w; gl_Position=projectionMatrix*mvPosition;
       ${THREE.ShaderChunk.fog_vertex}
       }`,
     fragmentShader: `${fogFrag}
-      uniform float uTime; varying vec3 vW;
+      uniform float uTime; uniform float uNight; varying vec3 vW;
       float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
       float n(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f); return mix(mix(h(i),h(i+vec2(1,0)),f.x), mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x), f.y); }
       void main(){
-        vec2 p = vW.xz*0.15;
-        float a = n(p + uTime*0.15) * n(p*2.3 - uTime*0.2);
-        float lines = smoothstep(0.42,0.5,a) * (1.0 - smoothstep(0.5,0.58,a));
-        float spark = step(0.995, h(floor(vW.xz*2.0) + floor(uTime*8.0)));
-        vec3 col = vec3(0.01,0.03,0.06) + vec3(0.1,0.85,1.0)*lines*0.9 + vec3(0.7,0.95,1.0)*spark*1.5;
-        gl_FragColor = vec4(col,1.0);
+        vec2 p = vW.xz*0.12;
+        float a = n(p + uTime*0.12) * n(p*2.1 - uTime*0.15);
+        float caustic = smoothstep(0.38,0.5,a) * (1.0 - smoothstep(0.5,0.62,a));
+        float sparkle = step(0.996, h(floor(vW.xz*1.5) + floor(uTime*4.0)));
+        vec3 day = vec3(0.12,0.72,0.82) + vec3(0.6,0.95,1.0)*caustic*0.35 + vec3(1.0)*sparkle*0.8;
+        vec3 night = vec3(0.03,0.12,0.28) + vec3(0.3,0.7,1.0)*caustic*0.25 + vec3(0.7,0.9,1.0)*sparkle*0.6;
+        gl_FragColor = vec4(mix(day, night, uNight),1.0);
         ${THREE.ShaderChunk.fog_fragment}
       }
       `,
@@ -216,7 +239,6 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
     m.position.set((w.minX + w.maxX) / 2, w.level, (w.minZ + w.maxZ) / 2);
     group.add(m);
   }
-  // Ocean beyond the bay.
   {
     const g = new THREE.PlaneGeometry(1400, 1400);
     g.rotateX(-Math.PI / 2);
@@ -226,15 +248,12 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
     group.add(m);
   }
 
-  // Sky, skyline, rain.
-  const sky = buildSky(disposables);
-  group.add(sky);
   const skyline = buildSkyline(disposables, quality);
   group.add(skyline);
   const rainView = rain ? buildRain(disposables, quality) : null;
   if (rainView) group.add(rainView.mesh);
 
-  // Arena boundary (energy fence around the active district).
+  // Arena boundary (soft force field around the active district).
   let arena: THREE.Mesh | null = null;
   const setArena = (b: { minX: number; minZ: number; maxX: number; maxZ: number } | null) => {
     if (arena) {
@@ -244,7 +263,6 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
     }
     if (!b) return;
     const a = newArrays();
-    const h = 30;
     const t = 0.05;
     for (const box of [
       { minX: b.minX - t, maxX: b.maxX + t, minZ: b.minZ - t, maxZ: b.minZ + t },
@@ -252,23 +270,34 @@ export function buildWorld(map: MapData, quality: Quality, envMap: THREE.Texture
       { minX: b.minX - t, maxX: b.minX + t, minZ: b.minZ, maxZ: b.maxZ },
       { minX: b.maxX - t, maxX: b.maxX + t, minZ: b.minZ, maxZ: b.maxZ },
     ])
-      pushBox(a, { ...box, minY: -1, maxY: h, mat: Mat.BARRIER, color: 0xffffff, flags: 0 }, [6, 6]);
+      pushBox(a, { ...box, minY: -1, maxY: 30, mat: Mat.BARRIER, color: 0xffffff, flags: 0 }, [6, 6]);
     arena = new THREE.Mesh(toGeometry(a), barrier);
     arena.renderOrder = 3;
     group.add(arena);
   };
 
+  const neonBase = new THREE.Color(1, 1, 1);
   return {
     group,
     materials,
     setArena,
-    update(t, cam) {
+    update(t, cam, light) {
+      const night = light.night;
       barrier.uniforms.uTime!.value = t;
+      barrier.uniforms.uNight!.value = night;
+      pad.uniforms.uTime!.value = t;
       waterMat.uniforms.uTime!.value = t;
-      holo.update(t);
-      sky.position.copy(cam);
+      waterMat.uniforms.uNight!.value = night;
+      facade.emissiveIntensity = night * 1.25 + light.dusk * 0.3;
+      neon.color.copy(neonBase).multiplyScalar(1 + night * 1.8);
+      signs.setNight(night);
+      holo.update(t, night);
+      (glow.material as THREE.ShaderMaterial).uniforms.uNight!.value = night;
       if (rainView) rainView.update(t, cam);
-      (skyline.material as THREE.ShaderMaterial).uniforms.uCam!.value.copy(cam);
+      const sm = skyline.material as THREE.ShaderMaterial;
+      sm.uniforms.uCam!.value.copy(cam);
+      sm.uniforms.uNight!.value = night;
+      sm.uniforms.uFog!.value.copy(light.horizon);
     },
     dispose() {
       for (const d of disposables) d.dispose();
@@ -296,8 +325,10 @@ function faceBasis(face: number): { n: THREE.Vector3; r: THREE.Vector3 } {
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, "0")}`;
 
-function buildSigns(signs: Sign[], disposables: { dispose(): void }[]): THREE.Group {
-  const out = new THREE.Group();
+/** Shop signs: coloured boards with white lettering by day that glow at night. */
+function buildSigns(signs: Sign[], disposables: { dispose(): void }[]) {
+  const group = new THREE.Group();
+  const mats: THREE.MeshBasicMaterial[] = [];
   for (const vertical of [false, true]) {
     const list = signs.filter((s) => (s.kind === "strip") === vertical);
     if (!list.length) continue;
@@ -311,22 +342,23 @@ function buildSigns(signs: Sign[], disposables: { dispose(): void }[]): THREE.Gr
     c.width = 2048;
     c.height = H;
     const ctx = c.getContext("2d")!;
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, 2048, H);
     const cell = new Map<string, [number, number]>();
     keys.forEach((k, i) => {
       const [text, color] = k.split("|") as [string, string];
       const x = (i % cols) * cw;
       const y = Math.floor(i / cols) * ch;
-      const t = textTexture(text, hex(Number(color)), { w: cw, h: ch, vertical });
+      ctx.fillStyle = hex(Number(color));
+      ctx.fillRect(x, y, cw, ch);
+      ctx.strokeStyle = "rgba(255,255,255,0.95)";
+      ctx.lineWidth = 6;
+      ctx.strokeRect(x + 5, y + 5, cw - 10, ch - 10);
+      const t = textTexture(text, "#ffffff", { w: cw, h: ch, vertical, glow: false });
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,0.35)";
+      ctx.shadowOffsetY = 3;
       ctx.drawImage(t.image as HTMLCanvasElement, x, y);
+      ctx.restore();
       t.dispose();
-      // Frame.
-      ctx.strokeStyle = hex(Number(color));
-      ctx.globalAlpha = 0.6;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(x + 4, y + 4, cw - 8, ch - 8);
-      ctx.globalAlpha = 1;
       cell.set(k, [x, y]);
     });
     const tex = new THREE.CanvasTexture(c);
@@ -340,17 +372,17 @@ function buildSigns(signs: Sign[], disposables: { dispose(): void }[]): THREE.Gr
       const [cx, cy] = cell.get(`${s.text}|${s.color}`)!;
       const { n, r } = faceBasis(s.face);
       const up = new THREE.Vector3(0, 1, 0);
-      const ctr = new THREE.Vector3(s.x, s.y, s.z).addScaledVector(n, 0.03);
+      const ctr = new THREE.Vector3(s.x, s.y, s.z).addScaledVector(n, 0.04);
       const hw = s.w / 2;
       const hh = s.h / 2;
       const base = pos.length / 3;
-      const corners = [
+      for (const p of [
         ctr.clone().addScaledVector(r, -hw).addScaledVector(up, -hh),
         ctr.clone().addScaledVector(r, hw).addScaledVector(up, -hh),
         ctr.clone().addScaledVector(r, hw).addScaledVector(up, hh),
         ctr.clone().addScaledVector(r, -hw).addScaledVector(up, hh),
-      ];
-      for (const p of corners) pos.push(p.x, p.y, p.z);
+      ])
+        pos.push(p.x, p.y, p.z);
       const u0 = cx / 2048;
       const u1 = (cx + cw) / 2048;
       const v0 = 1 - (cy + ch) / H;
@@ -364,36 +396,38 @@ function buildSigns(signs: Sign[], disposables: { dispose(): void }[]): THREE.Gr
     g.setIndex(idx);
     g.computeBoundingSphere();
     disposables.push(g);
-    const m = new THREE.MeshBasicMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, color: new THREE.Color(2.2, 2.2, 2.2), side: THREE.DoubleSide });
+    const m = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, toneMapped: false });
     disposables.push(m);
-    const mesh = new THREE.Mesh(g, m);
-    mesh.renderOrder = 1;
-    out.add(mesh);
+    mats.push(m);
+    group.add(new THREE.Mesh(g, m));
   }
-  return out;
+  return {
+    group,
+    setNight(night: number) {
+      // Slightly toned down in daylight, glowing brighter (and blooming) at night.
+      for (const m of mats) m.color.setScalar(0.92 + night * 0.9);
+    },
+  };
 }
 
 function buildHolos(signs: Sign[], disposables: { dispose(): void }[]) {
   const group = new THREE.Group();
   const mats: THREE.ShaderMaterial[] = [];
   for (const s of signs) {
-    const t = textTexture(s.text, hex(s.color), { w: 256, h: 512, vertical: s.h > s.w * 1.3 });
+    const t = textTexture(s.text, "#ffffff", { w: 256, h: 512, vertical: s.h > s.w * 1.3 });
     disposables.push(t);
     const m = new THREE.ShaderMaterial({
-      uniforms: { uMap: { value: t }, uTime: { value: 0 }, uColor: { value: new THREE.Color(s.color) }, uSeed: { value: Math.random() * 10 } },
+      uniforms: { uMap: { value: t }, uTime: { value: 0 }, uColor: { value: new THREE.Color(s.color) }, uNight: { value: 0 } },
       vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-      fragmentShader: `uniform sampler2D uMap; uniform float uTime; uniform vec3 uColor; uniform float uSeed; varying vec2 vUv;
+      fragmentShader: `uniform sampler2D uMap; uniform float uTime; uniform vec3 uColor; uniform float uNight; varying vec2 vUv;
         void main(){
-          vec2 uv=vUv; float g = step(0.97, fract(sin(floor(uTime*6.0+uSeed)*91.3)*437.5));
-          uv.x += g*0.03*sin(uv.y*80.0);
-          vec4 tx = texture2D(uMap, uv);
-          float scan = 0.65 + 0.35*sin(uv.y*220.0 - uTime*6.0);
-          float edge = smoothstep(0.0,0.08,uv.x)*smoothstep(1.0,0.92,uv.x);
-          vec3 c = tx.rgb*1.8*scan + uColor*0.12*edge;
-          float flick = 0.85+0.15*sin(uTime*23.0+uSeed);
-          gl_FragColor = vec4(c*flick, 1.0);
+          vec4 tx = texture2D(uMap, vUv);
+          float scan = 0.8 + 0.2*sin(vUv.y*120.0 - uTime*4.0);
+          vec3 c = mix(uColor, vec3(1.0), tx.a) ;
+          float a = (0.55 + 0.45*tx.a) * scan;
+          gl_FragColor = vec4(c * (1.0 + uNight*0.8), a);
         }`,
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
     });
     mats.push(m);
     disposables.push(m);
@@ -405,9 +439,17 @@ function buildHolos(signs: Sign[], disposables: { dispose(): void }[]) {
     mesh.lookAt(mesh.position.clone().add(n));
     group.add(mesh);
   }
-  return { group, update: (t: number) => mats.forEach((m) => (m.uniforms.uTime!.value = t)) };
+  return {
+    group,
+    update: (t: number, night: number) =>
+      mats.forEach((m) => {
+        m.uniforms.uTime!.value = t;
+        m.uniforms.uNight!.value = night;
+      }),
+  };
 }
 
+/** Warm halos around lamps & windows — only visible after dusk. */
 function buildGlows(map: MapData, disposables: { dispose(): void }[], quality: Quality): THREE.Points {
   const T = getTextures();
   const pos: number[] = [];
@@ -426,18 +468,17 @@ function buildGlows(map: MapData, disposables: { dispose(): void }[], quality: Q
   g.setAttribute("size", new THREE.Float32BufferAttribute(size, 1));
   disposables.push(g);
   const m = new THREE.ShaderMaterial({
-    uniforms: { uMap: { value: T.glow }, uScale: { value: window.innerHeight / 2 }, uStrength: { value: quality === "low" ? 0.6 : 0.85 } },
+    uniforms: { uMap: { value: T.glow }, uScale: { value: window.innerHeight / 2 }, uStrength: { value: quality === "low" ? 0.6 : 0.85 }, uNight: { value: 0 } },
     vertexShader: `attribute float size; attribute vec3 color; varying vec3 vC; varying float vF; uniform float uScale;
       void main(){
         vC=color; vec4 mv=modelViewMatrix*vec4(position,1.0);
         float d = -mv.z;
-        // Fade halos that are very close (they'd flood the screen) or very far.
         vF = smoothstep(3.0, 14.0, d) * (1.0 - smoothstep(140.0, 260.0, d));
         gl_PointSize = min(size*uScale/max(1.0,d), 220.0);
         gl_Position=projectionMatrix*mv;
       }`,
-    fragmentShader: `uniform sampler2D uMap; uniform float uStrength; varying vec3 vC; varying float vF;
-      void main(){ vec4 t=texture2D(uMap, gl_PointCoord); gl_FragColor=vec4(vC*t.a*uStrength*1.3*vF, 1.0); }`,
+    fragmentShader: `uniform sampler2D uMap; uniform float uStrength; uniform float uNight; varying vec3 vC; varying float vF;
+      void main(){ vec4 t=texture2D(uMap, gl_PointCoord); gl_FragColor=vec4(vC*t.a*uStrength*1.3*vF*uNight, 1.0); }`,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
   });
   disposables.push(m);
@@ -446,67 +487,36 @@ function buildGlows(map: MapData, disposables: { dispose(): void }[], quality: Q
   return p;
 }
 
-function buildSky(disposables: { dispose(): void }[]): THREE.Mesh {
-  const g = new THREE.SphereGeometry(900, 32, 16);
-  const m = new THREE.ShaderMaterial({
-    vertexShader: `varying vec3 vD; void main(){ vD=normalize(position); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
-    fragmentShader: `varying vec3 vD;
-      float h(vec3 p){ return fract(sin(dot(p,vec3(12.9898,78.233,45.164)))*43758.5453); }
-      void main(){
-        float y = vD.y;
-        vec3 top = vec3(0.012,0.01,0.03);
-        vec3 mid = vec3(0.06,0.02,0.10);
-        vec3 hor = vec3(0.32,0.06,0.28);
-        vec3 c = mix(hor, mid, smoothstep(-0.02,0.18,y));
-        c = mix(c, top, smoothstep(0.18,0.7,y));
-        // City glow at the horizon.
-        c += vec3(0.6,0.15,0.5)*exp(-abs(y)*14.0)*0.5 + vec3(0.1,0.4,0.6)*exp(-abs(y-0.02)*30.0)*0.2;
-        // Stars.
-        vec3 sp = floor(vD*420.0);
-        float s = step(0.9975, h(sp)) * smoothstep(0.15,0.5,y);
-        c += vec3(s)*0.9;
-        // Moon.
-        vec3 md = normalize(vec3(0.45,0.38,-0.8));
-        float d = dot(vD, md);
-        c += vec3(0.9,0.85,1.0)*smoothstep(0.9993,0.9996,d) + vec3(0.3,0.2,0.5)*pow(max(d,0.0),300.0)*0.8;
-        gl_FragColor = vec4(c,1.0);
-      }`,
-    side: THREE.BackSide, depthWrite: false, fog: false, toneMapped: false,
-  });
-  disposables.push(g, m);
-  const mesh = new THREE.Mesh(g, m);
-  mesh.renderOrder = -10;
-  mesh.frustumCulled = false;
-  return mesh;
-}
-
+/** Distant pastel skyline; windows reflect the sky by day and light up at night. */
 function buildSkyline(disposables: { dispose(): void }[], quality: Quality): THREE.InstancedMesh {
   const n = quality === "low" ? 140 : 260;
   const g = new THREE.BoxGeometry(1, 1, 1);
   g.translate(0, 0.5, 0);
   const m = new THREE.ShaderMaterial({
-    uniforms: { uCam: { value: new THREE.Vector3() } },
+    uniforms: { uCam: { value: new THREE.Vector3() }, uNight: { value: 0 }, uFog: { value: new THREE.Color(0xc4ecff) } },
     vertexShader: `varying vec3 vW; varying vec3 vN; varying float vSeed;
       void main(){ vec4 w = modelMatrix*instanceMatrix*vec4(position,1.0); vW=w.xyz; vN=normal; vSeed=instanceMatrix[3].x*0.137+instanceMatrix[3].z*0.71; gl_Position=projectionMatrix*viewMatrix*w; }`,
-    fragmentShader: `uniform vec3 uCam; varying vec3 vW; varying vec3 vN; varying float vSeed;
+    fragmentShader: `uniform vec3 uCam; uniform float uNight; uniform vec3 uFog; varying vec3 vW; varying vec3 vN; varying float vSeed;
       float h(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
       void main(){
-        vec3 base = vec3(0.025,0.022,0.045);
-        vec3 c = base;
+        float pick = h(vec2(vSeed, 3.1));
+        vec3 pastel = mix(vec3(1.0,0.75,0.7), vec3(0.65,0.85,1.0), pick);
+        pastel = mix(pastel, vec3(1.0,0.92,0.65), step(0.66, pick));
+        vec3 base = mix(pastel, vec3(0.12,0.16,0.3), uNight);
+        vec3 c = base * (abs(vN.y) > 0.5 ? 1.05 : abs(vN.x) > 0.5 ? 0.9 : 1.0);
         if (abs(vN.y) < 0.5) {
           float u = abs(vN.x) > 0.5 ? vW.z : vW.x;
-          vec2 cell = floor(vec2(u/2.6, vW.y/3.4));
           vec2 f = fract(vec2(u/2.6, vW.y/3.4));
-          float win = step(0.18,f.x)*step(f.x,0.82)*step(0.25,f.y)*step(f.y,0.75);
+          vec2 cell = floor(vec2(u/2.6, vW.y/3.4));
+          float win = step(0.2,f.x)*step(f.x,0.8)*step(0.25,f.y)*step(f.y,0.75);
           float r = h(cell + vSeed);
-          float lit = step(0.62, r);
-          vec3 wc = mix(vec3(1.0,0.75,0.45), vec3(0.4,0.9,1.0), step(0.85,r));
-          wc = mix(wc, vec3(1.0,0.4,0.9), step(0.95,r));
-          c += win*lit*wc*0.9;
+          vec3 dayWin = vec3(0.7,0.88,1.0);
+          vec3 nightWin = mix(vec3(1.0,0.82,0.5), vec3(0.6,0.9,1.0), step(0.85,r)) * step(0.55, r);
+          c = mix(c, mix(dayWin, nightWin, uNight), win * (uNight > 0.5 ? 1.0 : 0.6));
         }
         float d = length(vW.xz - uCam.xz);
-        float fog = 1.0 - exp(-d*0.0028);
-        c = mix(c, vec3(0.09,0.03,0.12), clamp(fog,0.0,0.85));
+        float fog = 1.0 - exp(-d*0.0026);
+        c = mix(c, uFog, clamp(fog,0.0,0.8));
         gl_FragColor = vec4(c,1.0);
       }`,
     toneMapped: false,
@@ -521,8 +531,7 @@ function buildSkyline(disposables: { dispose(): void }[], quality: Quality): THR
     const r = 250 + rnd() * 330;
     const x = Math.cos(a) * r;
     const z = Math.sin(a) * r;
-    // Keep the bay side (south-east) more open.
-    const h = (x > 100 && z > 100 ? 0.4 : 1) * (40 + rnd() * rnd() * 220);
+    const h = (x > 100 && z > 100 ? 0.4 : 1) * (30 + rnd() * rnd() * 160);
     const w = 18 + rnd() * 30;
     const d = 18 + rnd() * 30;
     mat.compose(new THREE.Vector3(x, -3, z), new THREE.Quaternion(), new THREE.Vector3(w, h, d));
@@ -561,7 +570,7 @@ function buildRain(disposables: { dispose(): void }[], quality: Quality) {
         vA = 0.35 + 0.65*top;
         gl_Position = projectionMatrix*viewMatrix*vec4(p,1.0);
       }`,
-    fragmentShader: `varying float vA; void main(){ gl_FragColor = vec4(vec3(0.55,0.7,1.0)*0.28*vA, 1.0); }`,
+    fragmentShader: `varying float vA; void main(){ gl_FragColor = vec4(vec3(0.7,0.8,1.0)*0.28*vA, 1.0); }`,
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   disposables.push(m);
@@ -576,21 +585,19 @@ function buildRain(disposables: { dispose(): void }[], quality: Quality) {
   };
 }
 
-/** Neon-tinted environment map so wet surfaces pick up colourful reflections. */
+/** Soft sky environment so glass picks up bright reflections. */
 export function makeEnvMap(renderer: THREE.WebGLRenderer): THREE.Texture {
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x06040c);
+  scene.background = new THREE.Color(0x9fd6ff);
   const add = (color: number, x: number, y: number, z: number, w: number, h: number) => {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
     m.position.set(x, y, z);
     m.lookAt(0, 0, 0);
     scene.add(m);
   };
-  add(0xff2bd6, 8, 3, 2, 6, 3);
-  add(0x22e5ff, -8, 2, -3, 5, 4);
-  add(0xff8a1f, 2, 4, 9, 4, 2);
-  add(0x9b5cff, -3, 6, 8, 8, 2);
-  add(0x2a1040, 0, 12, 0, 30, 30);
+  add(0xffffff, 0, 12, 0, 30, 30);
+  add(0xffe8b0, 8, 3, 2, 8, 4);
+  add(0x7ccf5a, 0, -8, 0, 30, 30);
   const pm = new THREE.PMREMGenerator(renderer);
   const rt = pm.fromScene(scene, 0.04);
   pm.dispose();

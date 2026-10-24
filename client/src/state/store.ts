@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Loadout, MatchResults, MatchStartInfo, PartyState } from "@neon/shared";
+import type { Loadout, MatchResults, MatchStartInfo, ModeId, PartyState } from "@neon/shared";
 import { DEFAULT_LOADOUT, randomCallsign } from "@neon/shared";
 import type { Connection } from "../net/connection";
 
@@ -34,7 +34,9 @@ export interface ActiveMatch {
 }
 
 export interface PracticeSetup {
-  mode: "tdm" | "ffa" | "dom" | "br" | "training";
+  mode: ModeId;
+  /** Payload: 0 = attack, 1 = defend. */
+  side?: number;
   arena: string;
   teamSize: number;
   bots: number;

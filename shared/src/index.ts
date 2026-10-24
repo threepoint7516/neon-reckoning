@@ -12,6 +12,7 @@ export { getFrontierMap, generateFrontier, DISTRICT_IDS, districtMeta, REGION, C
 export * from "./sim/player";
 export * from "./sim/config";
 export { Match } from "./sim/match";
+export * from "./sim/payload";
 export type { MatchPlayer, PlayerStats } from "./sim/match";
 export { BotBrain, botName } from "./ai/bot";
 export { NavGrid } from "./ai/nav";

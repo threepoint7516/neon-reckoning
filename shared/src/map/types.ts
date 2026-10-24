@@ -18,6 +18,13 @@ export const Mat = {
   ROCK: 12,
   FENCE: 13,
   BARRIER: 14,
+  BRICK: 15,
+  TILE: 16,
+  GRASS: 17,
+  LEAF: 18,
+  AWNING: 19,
+  PAINT: 20,
+  PAD: 21,
 } as const;
 export type MatId = (typeof Mat)[keyof typeof Mat];
 
@@ -110,6 +117,35 @@ export interface WaterRect {
   level: number;
 }
 
+/** Launch pad: entering its volume while falling/standing sets the player's velocity. */
+export interface JumpPad {
+  minX: number;
+  minY: number;
+  minZ: number;
+  maxX: number;
+  maxY: number;
+  maxZ: number;
+  vx: number;
+  vy: number;
+  vz: number;
+}
+
+/** One straight flight of steps (as built by MapBuilder.stairs). */
+export interface StairRun {
+  /** Leading edge of the first step. */
+  x: number;
+  z: number;
+  axis: "x" | "z";
+  dir: 1 | -1;
+  width: number;
+  /** Height at the start and at the end of the run (y1 < y0 for runs that go down). */
+  y0: number;
+  y1: number;
+  steps: number;
+  /** Horizontal length of the run. */
+  len: number;
+}
+
 export interface MapData {
   name: string;
   minX: number;
@@ -128,4 +164,9 @@ export interface MapData {
   loot: Vec3[];
   /** Raised street/road network for the map overlay. */
   roads: { minX: number; minZ: number; maxX: number; maxZ: number }[];
+  jumpPads: JumpPad[];
+  /** Breakable loot crate positions (entities at runtime). */
+  crates: Vec3[];
+  /** Every stair flight; their walk space is kept free of geometry. */
+  stairs?: StairRun[];
 }

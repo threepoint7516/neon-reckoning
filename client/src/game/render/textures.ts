@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Rng } from "@neon/shared";
 
 // All textures are generated on canvases at startup — no image assets.
+// Base textures are light patterns; per-box vertex colours supply the hue.
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
   const c = document.createElement("canvas");
@@ -41,9 +42,16 @@ export interface TextureSet {
   panel: THREE.Texture;
   rock: THREE.Texture;
   fence: THREE.Texture;
+  brick: THREE.Texture;
+  tile: THREE.Texture;
+  grass: THREE.Texture;
+  leaf: THREE.Texture;
+  awning: THREE.Texture;
+  paint: THREE.Texture;
   glow: THREE.Texture;
   smoke: THREE.Texture;
   spark: THREE.Texture;
+  toon: THREE.Texture;
 }
 
 let cached: TextureSet | null = null;
@@ -52,154 +60,179 @@ export function getTextures(): TextureSet {
   if (cached) return cached;
   const rng = new Rng(4242);
 
-  // Concrete: mottled grey with stains and seams.
+  // Concrete: soft, light, a few stains.
   const [cc, cx] = canvas(256, 256);
-  noise(cx, 256, 256, 170, 40, rng, 2);
-  for (let i = 0; i < 30; i++) {
-    cx.fillStyle = `rgba(40,30,50,${rng.range(0.03, 0.12)})`;
+  noise(cx, 256, 256, 222, 22, rng, 2);
+  for (let i = 0; i < 18; i++) {
+    cx.fillStyle = `rgba(120,110,100,${rng.range(0.03, 0.08)})`;
     cx.beginPath();
-    cx.ellipse(rng.range(0, 256), rng.range(0, 256), rng.range(10, 60), rng.range(10, 60), 0, 0, Math.PI * 2);
+    cx.ellipse(rng.range(0, 256), rng.range(0, 256), rng.range(10, 50), rng.range(10, 50), 0, 0, Math.PI * 2);
     cx.fill();
   }
-  cx.fillStyle = "rgba(0,0,0,0.25)";
+  cx.fillStyle = "rgba(0,0,0,0.12)";
   cx.fillRect(0, 127, 256, 2);
   cx.fillRect(127, 0, 2, 256);
 
-  // Metal: brushed with panel seams and rivets.
+  // Metal: brushed, light, panel seams.
   const [mc, mx] = canvas(256, 256);
-  noise(mx, 256, 256, 160, 30, rng, 1);
+  noise(mx, 256, 256, 210, 18, rng, 1);
   for (let y = 0; y < 256; y += 2) {
-    mx.fillStyle = `rgba(255,255,255,${rng.range(0, 0.05)})`;
+    mx.fillStyle = `rgba(255,255,255,${rng.range(0, 0.08)})`;
     mx.fillRect(0, y, 256, 1);
   }
-  mx.strokeStyle = "rgba(0,0,0,0.5)";
+  mx.strokeStyle = "rgba(0,0,0,0.22)";
   mx.lineWidth = 2;
   mx.strokeRect(2, 2, 252, 252);
-  mx.fillStyle = "rgba(0,0,0,0.4)";
-  for (const [x, y] of [[10, 10], [246, 10], [10, 246], [246, 246], [128, 10], [128, 246]] as const) {
-    mx.beginPath();
-    mx.arc(x, y, 3, 0, Math.PI * 2);
-    mx.fill();
-  }
 
-  // Facade: dark cladding with a window grid; emissive map lights random windows.
+  // Facade: plaster with white-framed, sky-reflecting windows; emissive map
+  // lights a random subset of them warmly at night.
   const [fc, fx] = canvas(256, 256);
   const [ec, ex] = canvas(256, 256);
-  noise(fx, 256, 256, 120, 20, rng, 4);
+  noise(fx, 256, 256, 232, 12, rng, 4);
   ex.fillStyle = "#000";
   ex.fillRect(0, 0, 256, 256);
-  const cols = 4;
-  const rows = 4;
-  const warm = ["#ffcf8a", "#ffb36b", "#8af3ff", "#ff8ad8", "#c8b8ff", "#fff1c8"];
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++) {
-      const x = c * 64 + 10;
+  const warm = ["#ffd59a", "#ffc070", "#fff0c8", "#ffe2a8", "#bfe8ff", "#ffb0d0"];
+  for (let r = 0; r < 4; r++)
+    for (let c = 0; c < 4; c++) {
+      const x = c * 64 + 12;
       const y = r * 64 + 14;
-      fx.fillStyle = "#1a1d28";
-      fx.fillRect(x, y, 44, 36);
-      fx.fillStyle = "rgba(120,140,180,0.25)";
-      fx.fillRect(x, y, 44, 4);
-      if (rng.chance(0.42)) {
-        const col = rng.pick(warm);
-        const g = ex.createLinearGradient(x, y, x, y + 36);
-        g.addColorStop(0, col);
-        g.addColorStop(1, "rgba(0,0,0,0.6)");
-        ex.globalAlpha = rng.range(0.35, 1);
-        ex.fillStyle = g;
-        ex.fillRect(x, y, 44, 36);
+      fx.fillStyle = "#ffffff";
+      fx.fillRect(x - 4, y - 4, 48, 44);
+      const g = fx.createLinearGradient(x, y, x + 40, y + 36);
+      g.addColorStop(0, "#d6f0ff");
+      g.addColorStop(0.5, "#8ec8f2");
+      g.addColorStop(1, "#b9e0ff");
+      fx.fillStyle = g;
+      fx.fillRect(x, y, 40, 36);
+      fx.fillStyle = "rgba(255,255,255,0.7)";
+      fx.fillRect(x + 4, y + 4, 10, 3);
+      fx.fillStyle = "#ffffff";
+      fx.fillRect(x + 19, y, 2, 36);
+      if (rng.chance(0.55)) {
+        ex.globalAlpha = rng.range(0.55, 1);
+        ex.fillStyle = rng.pick(warm);
+        ex.fillRect(x, y, 40, 36);
         ex.globalAlpha = 1;
-        // Blinds.
-        ex.fillStyle = "rgba(0,0,0,0.35)";
-        for (let b = 0; b < 36; b += 6) ex.fillRect(x, y + b, 44, 2);
+        ex.fillStyle = "rgba(0,0,0,0.25)";
+        ex.fillRect(x + 19, y, 2, 36);
       }
     }
-  fx.fillStyle = "rgba(0,0,0,0.5)";
-  for (let r = 0; r < rows; r++) fx.fillRect(0, r * 64 + 60, 256, 4);
+  fx.fillStyle = "rgba(0,0,0,0.08)";
+  for (let r = 0; r < 4; r++) fx.fillRect(0, r * 64 + 60, 256, 3);
 
-  // Shipping container: corrugation.
+  // Container: corrugation.
   const [kc, kx] = canvas(256, 256);
-  kx.fillStyle = "#b8b8b8";
-  kx.fillRect(0, 0, 256, 256);
   for (let x = 0; x < 256; x += 16) {
     const g = kx.createLinearGradient(x, 0, x + 16, 0);
-    g.addColorStop(0, "#8a8a8a");
-    g.addColorStop(0.5, "#e0e0e0");
-    g.addColorStop(1, "#8a8a8a");
+    g.addColorStop(0, "#c8c8c8");
+    g.addColorStop(0.5, "#ffffff");
+    g.addColorStop(1, "#c8c8c8");
     kx.fillStyle = g;
     kx.fillRect(x, 0, 16, 256);
   }
-  kx.globalAlpha = 0.25;
-  noise(kx, 256, 256, 128, 120, rng, 4);
-  kx.globalAlpha = 1;
-  kx.fillStyle = "rgba(60,20,10,0.35)";
-  for (let i = 0; i < 8; i++) kx.fillRect(rng.range(0, 256), rng.range(0, 256), rng.range(4, 30), rng.range(10, 80));
 
-  // Wet asphalt.
+  // Asphalt: mid grey with speckles.
   const [ac, ax] = canvas(256, 256);
-  noise(ax, 256, 256, 90, 50, rng, 1);
-  for (let i = 0; i < 12; i++) {
-    ax.fillStyle = `rgba(20,20,30,${rng.range(0.1, 0.3)})`;
-    ax.beginPath();
-    ax.ellipse(rng.range(0, 256), rng.range(0, 256), rng.range(10, 50), rng.range(5, 25), rng.range(0, 3), 0, Math.PI * 2);
-    ax.fill();
-  }
+  noise(ax, 256, 256, 196, 40, rng, 1);
 
-  // Wood planks.
+  // Wood planks (light).
   const [wc, wx] = canvas(128, 128);
   for (let y = 0; y < 128; y += 16) {
-    wx.fillStyle = `rgb(${150 + rng.range(-20, 20)},${120 + rng.range(-20, 20)},${90 + rng.range(-15, 15)})`;
+    const v = 225 + rng.range(-15, 15);
+    wx.fillStyle = `rgb(${v},${v - 8},${v - 20})`;
     wx.fillRect(0, y, 128, 15);
-    wx.fillStyle = "rgba(0,0,0,0.4)";
+    wx.fillStyle = "rgba(90,60,30,0.35)";
     wx.fillRect(0, y + 15, 128, 1);
+    for (let k = 0; k < 3; k++) {
+      wx.fillStyle = "rgba(120,80,40,0.12)";
+      wx.fillRect(rng.range(0, 128), y + rng.range(2, 12), rng.range(10, 40), 1);
+    }
   }
-  wx.globalAlpha = 0.25;
-  noise(wx, 128, 128, 128, 100, rng, 1);
-  wx.globalAlpha = 1;
 
   // Dirt & rock.
   const [dc, dx] = canvas(128, 128);
-  noise(dx, 128, 128, 140, 70, rng, 2);
+  noise(dx, 128, 128, 210, 40, rng, 2);
   const [rc, rx] = canvas(128, 128);
-  noise(rx, 128, 128, 150, 90, rng, 3);
-  for (let i = 0; i < 20; i++) {
-    rx.strokeStyle = "rgba(0,0,0,0.3)";
-    rx.beginPath();
-    rx.moveTo(rng.range(0, 128), rng.range(0, 128));
-    rx.lineTo(rng.range(0, 128), rng.range(0, 128));
-    rx.stroke();
-  }
+  noise(rx, 128, 128, 205, 45, rng, 4);
 
-  // Sci-fi panels.
+  // Panels.
   const [pc, px] = canvas(256, 256);
-  noise(px, 256, 256, 150, 20, rng, 2);
-  px.strokeStyle = "rgba(0,0,0,0.45)";
+  noise(px, 256, 256, 228, 10, rng, 2);
+  px.strokeStyle = "rgba(0,0,0,0.18)";
   px.lineWidth = 3;
   px.strokeRect(4, 4, 120, 248);
   px.strokeRect(132, 4, 120, 120);
   px.strokeRect(132, 132, 120, 120);
-  px.fillStyle = "rgba(255,255,255,0.12)";
-  px.fillRect(20, 30, 80, 6);
-  px.fillRect(150, 150, 30, 30);
 
-  // Chain-link fence (alpha).
+  // Fence: wooden slats with gaps (alpha).
   const [nc, nx] = canvas(64, 64);
   nx.clearRect(0, 0, 64, 64);
-  nx.strokeStyle = "rgba(200,210,230,1)";
-  nx.lineWidth = 2.5;
-  nx.beginPath();
-  nx.moveTo(0, 0);
-  nx.lineTo(64, 64);
-  nx.moveTo(64, 0);
-  nx.lineTo(0, 64);
-  nx.moveTo(-32, 0);
-  nx.lineTo(32, 64);
-  nx.moveTo(32, 0);
-  nx.lineTo(96, 64);
-  nx.moveTo(96, 0);
-  nx.lineTo(32, 64);
-  nx.moveTo(32, 0);
-  nx.lineTo(-32, 64);
-  nx.stroke();
+  nx.fillStyle = "rgba(255,255,255,1)";
+  for (let x = 2; x < 64; x += 16) nx.fillRect(x, 0, 10, 64);
+  nx.fillRect(0, 10, 64, 6);
+  nx.fillRect(0, 44, 64, 6);
+
+  // Brick.
+  const [bc, bx] = canvas(256, 256);
+  bx.fillStyle = "#f2ebe4";
+  bx.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 16; row++) {
+    const off = row % 2 ? 16 : 0;
+    for (let col = -1; col < 8; col++) {
+      const v = 215 + rng.range(-25, 25);
+      bx.fillStyle = `rgb(${v},${v - 10},${v - 14})`;
+      bx.fillRect(col * 32 + off + 2, row * 16 + 2, 28, 12);
+    }
+  }
+
+  // Tiles.
+  const [tc, tx] = canvas(128, 128);
+  tx.fillStyle = "#ffffff";
+  tx.fillRect(0, 0, 128, 128);
+  for (let y = 0; y < 128; y += 32)
+    for (let x = 0; x < 128; x += 32) {
+      const v = 238 + rng.range(-12, 10);
+      tx.fillStyle = `rgb(${v},${v},${v})`;
+      tx.fillRect(x + 1, y + 1, 30, 30);
+    }
+
+  // Grass: blades of green-ish light noise.
+  const [gc2, gx2] = canvas(128, 128);
+  noise(gx2, 128, 128, 225, 30, rng, 2);
+  for (let i = 0; i < 300; i++) {
+    gx2.fillStyle = `rgba(255,255,255,${rng.range(0.1, 0.3)})`;
+    gx2.fillRect(rng.range(0, 128), rng.range(0, 128), 1, rng.range(3, 7));
+  }
+
+  // Leaves: blobby clusters.
+  const [lc, lx] = canvas(128, 128);
+  lx.fillStyle = "#d8d8d8";
+  lx.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 40; i++) {
+    const r = rng.range(6, 16);
+    const x = rng.range(0, 128);
+    const y = rng.range(0, 128);
+    const g = lx.createRadialGradient(x, y - r * 0.3, 1, x, y, r);
+    g.addColorStop(0, "rgba(255,255,255,0.9)");
+    g.addColorStop(1, "rgba(170,170,170,0.0)");
+    lx.fillStyle = g;
+    lx.beginPath();
+    lx.arc(x, y, r, 0, Math.PI * 2);
+    lx.fill();
+  }
+
+  // Awning stripes (white + tint).
+  const [sc2, sx2] = canvas(128, 128);
+  for (let x = 0; x < 128; x += 32) {
+    sx2.fillStyle = "#ffffff";
+    sx2.fillRect(x, 0, 16, 128);
+    sx2.fillStyle = "#e6e6e6";
+    sx2.fillRect(x + 16, 0, 16, 128);
+  }
+
+  // Painted plaster (almost flat).
+  const [qc, qx] = canvas(128, 128);
+  noise(qx, 128, 128, 240, 8, rng, 4);
 
   // Radial glow sprite.
   const [gc, gx] = canvas(128, 128);
@@ -212,16 +245,16 @@ export function getTextures(): TextureSet {
   gx.fillRect(0, 0, 128, 128);
 
   // Smoke puff.
-  const [sc, sx] = canvas(128, 128);
+  const [smc, smx] = canvas(128, 128);
   for (let i = 0; i < 14; i++) {
     const r = rng.range(18, 40);
     const x = 64 + rng.range(-22, 22);
     const y = 64 + rng.range(-22, 22);
-    const g = sx.createRadialGradient(x, y, 0, x, y, r);
+    const g = smx.createRadialGradient(x, y, 0, x, y, r);
     g.addColorStop(0, "rgba(255,255,255,0.35)");
     g.addColorStop(1, "rgba(255,255,255,0)");
-    sx.fillStyle = g;
-    sx.fillRect(0, 0, 128, 128);
+    smx.fillStyle = g;
+    smx.fillRect(0, 0, 128, 128);
   }
 
   // Spark (sharp point).
@@ -233,9 +266,17 @@ export function getTextures(): TextureSet {
   pkx.fillStyle = sg;
   pkx.fillRect(0, 0, 32, 32);
 
+  // Toon ramp: 4 crisp tones for the cartoon look.
+  const toonData = new Uint8Array([110, 110, 110, 255, 175, 175, 175, 255, 225, 225, 225, 255, 255, 255, 255, 255]);
+  const toon = new THREE.DataTexture(toonData, 4, 1, THREE.RGBAFormat);
+  toon.minFilter = toon.magFilter = THREE.NearestFilter;
+  toon.generateMipmaps = false;
+  toon.needsUpdate = true;
+
   cached = {
     concrete: tex(cc), metal: tex(mc), facade: tex(fc), facadeEmissive: tex(ec), container: tex(kc), asphalt: tex(ac), wood: tex(wc),
-    dirt: tex(dc), panel: tex(pc), rock: tex(rc), fence: tex(nc), glow: tex(gc, true, false), smoke: tex(sc, true, false), spark: tex(pk, true, false),
+    dirt: tex(dc), panel: tex(pc), rock: tex(rc), fence: tex(nc), brick: tex(bc), tile: tex(tc), grass: tex(gc2), leaf: tex(lc),
+    awning: tex(sc2), paint: tex(qc), glow: tex(gc, true, false), smoke: tex(smc, true, false), spark: tex(pk, true, false), toon,
   };
   return cached;
 }

@@ -62,6 +62,9 @@ export class Input {
       this.mouseHeld &= ~b;
     });
     on("mousemove", (e) => {
+      // Self-heal: if a mouseup was lost, the live button state wins.
+      if (!(e.buttons & 1)) this.mouseHeld &= ~Btn.FIRE;
+      if (!(e.buttons & 2)) this.mouseHeld &= ~Btn.ADS;
       if (!this.locked || !this.enabled) return;
       // Ignore absurd spikes some browsers emit when re-locking.
       if (Math.abs(e.movementX) > 600 || Math.abs(e.movementY) > 600) return;
@@ -84,6 +87,9 @@ export class Input {
     });
     window.addEventListener("blur", this.releaseAll);
     this.disposers.push(() => window.removeEventListener("blur", this.releaseAll));
+    on("visibilitychange", () => {
+      if (document.visibilityState !== "visible") this.releaseAll();
+    });
   }
 
   requestLock(): void {

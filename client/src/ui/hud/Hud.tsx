@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from "react";
 import type { Game } from "../../game/Game";
-import { MEDAL_NAMES } from "../../game/hud";
+import { MEDAL_NAMES, STREAK_REWARDS } from "../../game/hud";
 import type { HudData } from "../../game/hud";
 import { useSettings, bindLabel } from "../../state/settings";
 import { useStore } from "../../state/store";
@@ -32,7 +32,8 @@ export function Hud({ game }: { game: Game }) {
   const s = useSettings();
   const ping = useStore((st) => st.net.ping);
   const h = game.hud;
-  const t = performance.now() / 1000;
+  // HUD timestamps come from the game clock, so compare against it (not page time).
+  const t = game.now;
   const district = game.district;
   return (
     <div className={`hud ${s.competitiveHud ? "competitive" : ""}`} style={{ ["--hud-scale" as string]: s.hudScale }}>
@@ -45,6 +46,20 @@ export function Hud({ game }: { game: Game }) {
       <div className="tl">
         <Minimap game={game} h={h} />
         <div className="district-name">{district ? district.name : "Neon Frontier"}</div>
+        {game.cfg.mode !== "training" && (
+          <div className="lvl-chip" title="Session level">
+            <b>LV {h.level.level}</b>
+            <span className="lvl-bar">
+              <i style={{ width: `${h.level.k * 100}%` }} />
+            </span>
+          </div>
+        )}
+        {h.toasts.map((x) => (
+          <div key={x.id} className={`toast ${x.kind}`}>
+            <b>{x.title}</b>
+            <span>{x.text}</span>
+          </div>
+        ))}
         {s.showFps && (
           <div className="netinfo" style={{ marginTop: 6, width: 200, textAlign: "center" }}>
             <span className="fps">{h.fps} FPS</span>
@@ -68,7 +83,9 @@ export function Hud({ game }: { game: Game }) {
       <div className="tc">
         <div className="row" style={{ gap: 6 }}>
           {h.scoreLine[0] && <ScoreBox {...h.scoreLine[0]} />}
-          <div className="timer">{fmtTime(h.timeLeft)}</div>
+          <div className="col" style={{ gap: 3, alignItems: "center" }}>
+            <div className="timer">{fmtTime(h.timeLeft)}</div>
+          </div>
           {h.scoreLine[1] && <ScoreBox {...h.scoreLine[1]} />}
         </div>
         {h.points.length > 0 && (
@@ -80,18 +97,40 @@ export function Hud({ game }: { game: Game }) {
             ))}
           </div>
         )}
+        {h.payload && <PayloadBar p={h.payload} />}
+        {h.gunGame && (
+          <div className="gg">
+            <div className="gg-pips">
+              {Array.from({ length: h.gunGame.total }).map((_, i) => (
+                <i key={i} className={i < h.gunGame!.tier ? "done" : i === h.gunGame!.tier ? "on" : ""} />
+              ))}
+            </div>
+            <div className="gg-text">
+              WEAPON {h.gunGame.tier + 1}/{h.gunGame.total}
+              {h.gunGame.next ? <span> · next: {h.gunGame.next}</span> : <b> · FINAL — one kill wins</b>}
+            </div>
+          </div>
+        )}
         {h.zone && (
           <div className="row" style={{ gap: 8 }}>
-            <span className="chip" style={{ background: "rgba(0,0,0,.5)" }}>
+            <span className="chip" style={{ background: "rgba(20,30,60,.55)", color: "#fff" }}>
               {h.zone.alive} squads left
             </span>
-            <span className={`chip ${h.zone.shrinking ? "bad" : "warn"}`} style={{ background: "rgba(0,0,0,.5)" }}>
+            <span className={`chip ${h.zone.shrinking ? "bad" : "warn"}`} style={{ background: "rgba(20,30,60,.55)", color: "#fff" }}>
               {h.zone.shrinking ? "Storm closing" : "Storm shrinks in"} {fmtTime(h.zone.next)}
             </span>
           </div>
         )}
-        {h.cacheActive && <span className="chip warn" style={{ background: "rgba(0,0,0,.5)" }}>◆ Data Cache active</span>}
-        {h.storm > 0 && <span className="chip bad" style={{ background: "rgba(0,0,0,.5)" }}>NEON STORM {h.storm}s</span>}
+        {h.cacheActive && (
+          <span className="chip warn" style={{ background: "rgba(20,30,60,.55)", color: "#fff" }}>
+            ◆ Data Cache active
+          </span>
+        )}
+        {h.storm > 0 && (
+          <span className="chip bad" style={{ background: "rgba(20,30,60,.55)", color: "#fff" }}>
+            NEON STORM {h.storm}s
+          </span>
+        )}
         <div className="banners">
           {h.banners.map((b) => (
             <div key={b.id} className={`banner ${b.kind}`}>
@@ -118,11 +157,30 @@ export function Hud({ game }: { game: Game }) {
       </div>
 
       {h.alive && !h.downed && <Crosshair h={h} t={t} />}
+      {h.dmgNums.map((d) => {
+        const age = t - d.t;
+        return (
+          <div key={d.id} className={`dmgnum ${d.kill ? "kill" : d.head ? "head" : ""}`} style={{ transform: `translate(${d.dx + 30}px, ${-age * 70 - 10}px) scale(${1 + Math.max(0, 0.25 - age) * 2})`, opacity: Math.max(0, 1 - age / 0.9) }}>
+            {d.d}
+            {d.head ? "!" : ""}
+          </div>
+        );
+      })}
       <DamageArcs h={h} t={t} />
 
       {h.killBanner && (
         <div className="killbanner">
           {h.killBanner.head ? "◎ Headshot · " : ""}Eliminated {h.killBanner.name}
+        </div>
+      )}
+      {h.scorePops.length > 0 && (
+        <div className="scorepops">
+          {t - h.combo.t < 3 && h.combo.n > 1 && <div className="combo">+{h.combo.pts}</div>}
+          {h.scorePops.map((p) => (
+            <div key={p.id} className="pop" style={{ opacity: Math.max(0, 1 - Math.max(0, t - p.t - 1.4) / 0.8) }}>
+              <b>+{p.pts}</b> {p.text}
+            </div>
+          ))}
         </div>
       )}
       <div className="medals">
@@ -159,8 +217,8 @@ export function Hud({ game }: { game: Game }) {
               {h.overdrive > 0 && <span style={{ background: "#ffe14a", color: "#000" }}>OVERDRIVE {Math.ceil(h.overdrive)}</span>}
               {h.emp > 0 && <span style={{ background: "#3df2ff", color: "#000" }}>EMP {Math.ceil(h.emp)}</span>}
               {h.downed && <span style={{ background: "#ff3b5c" }}>DOWNED</span>}
-              {h.streak >= 2 && <span style={{ border: "1px solid #ff2bd6", color: "#ff2bd6" }}>STREAK {h.streak}</span>}
             </div>
+            {h.streak >= 1 && game.cfg.mode !== "training" && <StreakMeter streak={h.streak} />}
             <div className="vnum">
               {Math.ceil(h.health)}
               <small>{h.maxArmor > 0 ? `+${Math.ceil(h.armor)} ARMOR` : ""}</small>
@@ -207,12 +265,14 @@ export function Hud({ game }: { game: Game }) {
             ))}
           </div>
           <div className="equip">
-            <div className="eq" style={{ borderColor: h.grenade.color }}>
-              <span className="key">{bindLabel("grenade")}</span>
-              <b style={{ color: h.grenade.color }}>{h.grenade.count}</b>
-              {h.grenade.name.replace(" Grenade", "")}
-              <div style={{ fontSize: 8, opacity: 0.6 }}>[{bindLabel("cycleGrenade")}] cycle</div>
-            </div>
+            {!h.gunGame && (
+              <div className="eq" style={{ borderColor: h.grenade.color }}>
+                <span className="key">{bindLabel("grenade")}</span>
+                <b style={{ color: h.grenade.color }}>{h.grenade.count}</b>
+                {h.grenade.name.replace(" Grenade", "")}
+                <div style={{ fontSize: 8, opacity: 0.6 }}>[{bindLabel("cycleGrenade")}] cycle</div>
+              </div>
+            )}
             <div className="eq" style={{ borderColor: h.tactical.color }}>
               <span className="key">{bindLabel("tactical")}</span>
               <b style={{ color: h.tactical.cd > 0 ? "#888" : h.tactical.color }}>{h.tactical.cd > 0 ? Math.ceil(h.tactical.cd) : "✦"}</b>
@@ -234,12 +294,54 @@ export function Hud({ game }: { game: Game }) {
   );
 }
 
+/** Kill-streak meter: pips up to the next reward, then the reward's name. */
+function StreakMeter({ streak }: { streak: number }) {
+  const next = STREAK_REWARDS.find((r) => r.at > streak);
+  const prevAt = [...STREAK_REWARDS].reverse().find((r) => r.at <= streak)?.at ?? 0;
+  return (
+    <div className="streak-meter">
+      <span className="sm-n">{streak}</span>
+      {next ? (
+        <>
+          <span className="sm-pips">
+            {Array.from({ length: next.at - prevAt }).map((_, i) => (
+              <i key={i} className={prevAt + i < streak ? "on" : ""} />
+            ))}
+          </span>
+          <span className="sm-next">{next.name}</span>
+        </>
+      ) : (
+        <span className="sm-next">UNSTOPPABLE</span>
+      )}
+    </div>
+  );
+}
+
 function ScoreBox({ label, value, color, mine }: { label: string; value: number; color: string; mine: boolean }) {
   return (
     <div className="scores">
       <div className="s" style={{ borderColor: color, boxShadow: mine ? `0 0 14px ${color}55` : undefined }}>
         <b style={{ color }}>{value}</b>
         <small>{label}</small>
+      </div>
+    </div>
+  );
+}
+
+function PayloadBar({ p }: { p: NonNullable<HudData["payload"]> }) {
+  const status = p.overtime && p.state !== 1 ? "OVERTIME" : (["HALTED", `MOVING ×${p.escorts}`, "CONTESTED", "ROLLING BACK"][p.state] ?? "");
+  return (
+    <div className={`payload-bar s${p.state} ${p.overtime ? "ot" : ""}`}>
+      <div className="pb-head">
+        <span>{p.attacking ? "ESCORT THE PAYLOAD" : "STOP THE PAYLOAD"}</span>
+        <span className="pb-status">{status}</span>
+      </div>
+      <div className="pb-track">
+        <div className="pb-fill" style={{ width: `${p.progress * 100}%`, background: p.color }} />
+        {p.checkpoints.map((c, i) => (
+          <i key={i} className={`pb-cp ${i < p.reached ? "done" : ""}`} style={{ left: `${c * 100}%`, borderColor: i < p.reached ? p.color : undefined }} />
+        ))}
+        <b className="pb-cart" style={{ left: `${p.progress * 100}%`, borderColor: p.color, boxShadow: `0 0 10px ${p.color}` }} />
       </div>
     </div>
   );
@@ -252,6 +354,7 @@ function Countdown({ game, h }: { game: Game; h: HudData }) {
       <div style={{ letterSpacing: "0.4em", fontSize: 14, color: "#aab" }}>{info.name.toUpperCase()}</div>
       <b>{Math.ceil(h.timeLeft)}</b>
       <div style={{ maxWidth: 460, fontSize: 14 }}>{info.blurb}</div>
+      {h.payload && <div style={{ marginTop: 8, color: h.payload.color, fontSize: 13, letterSpacing: "0.2em" }}>{h.payload.attacking ? "YOU ARE ATTACKING — STAY WITHIN 5 M OF THE PAYLOAD TO PUSH IT" : "YOU ARE DEFENDING — STAND ON THE PAYLOAD TO STOP IT"}</div>}
       {game.cfg.modifiers.length > 0 && <div style={{ marginTop: 8, color: "var(--yellow)", fontSize: 12, letterSpacing: "0.15em" }}>MODIFIERS: {game.cfg.modifiers.join(" · ").toUpperCase()}</div>}
     </div>
   );
@@ -358,11 +461,24 @@ function Minimap({ game, h }: { game: Game; h: HudData }) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    if (game.track) {
+      const tr = game.track;
+      ctx.strokeStyle = "rgba(34,229,255,0.45)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      tr.pts.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, (p.x - h.meX) * S, (p.z - h.meZ) * S));
+      ctx.stroke();
+    }
     for (const mk of h.markers) {
       const x = (mk.x - h.meX) * S;
       const y = (mk.z - h.meZ) * S;
       ctx.fillStyle = mk.color;
-      if (mk.kind === "point" || mk.kind === "cache" || mk.kind === "power") {
+      if (mk.kind === "payload") {
+        ctx.fillRect(x - 5, y - 5, 10, 10);
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x - 5, y - 5, 10, 10);
+      } else if (mk.kind === "point" || mk.kind === "cache" || mk.kind === "power") {
         ctx.font = "bold 12px sans-serif";
         ctx.save();
         ctx.translate(x, y);

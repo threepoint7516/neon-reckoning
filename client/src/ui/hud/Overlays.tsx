@@ -27,7 +27,7 @@ export function Scoreboard({ game }: { game: Game }) {
   const hex = (c: number) => `#${c.toString(16).padStart(6, "0")}`;
   const br = game.cfg.mode === "br";
   return (
-    <div className="overlay" style={{ background: "rgba(5,3,12,0.55)", pointerEvents: "none" }}>
+    <div className="overlay" style={{ background: "rgba(31,42,68,0.3)", pointerEvents: "none" }}>
       <div className="panel" style={{ width: "min(900px, 96vw)" }}>
         <h3>
           {MODE_INFO[game.cfg.mode].name} · {game.district?.name ?? "Neon Frontier"}
@@ -124,10 +124,17 @@ export function MapOverlay({ game }: { game: Game }) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+    if (game.track) {
+      ctx.strokeStyle = "rgba(34,229,255,0.6)";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      game.track.pts.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(p.x), Z(p.z)));
+      ctx.stroke();
+    }
     for (const mk of h.markers) {
       ctx.fillStyle = mk.color;
       ctx.beginPath();
-      ctx.arc(X(mk.x), Z(mk.z), mk.kind === "point" ? 7 : 4, 0, Math.PI * 2);
+      ctx.arc(X(mk.x), Z(mk.z), mk.kind === "point" || mk.kind === "payload" ? 7 : 4, 0, Math.PI * 2);
       ctx.fill();
       if (mk.label) {
         ctx.font = "bold 11px sans-serif";

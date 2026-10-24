@@ -18,12 +18,17 @@ import type { PlayerState, SimHooks, StepEnv } from "./player";
 import type { GrenadeId, Loadout, MatchConfig, PlayerInput, WeaponId } from "../types";
 import { DEFAULT_LOADOUT } from "../types";
 import type {
-  CPSnap, DeploySnap, GameEvent, MatchResults, PickupSnap, PlayerSnap, ProjSnap, ResultRow, RosterEntry, ScoreRow, SmokeSnap,
+  CPSnap, DeploySnap, GameEvent, MatchResults, PayloadSnap, PickupSnap, PlayerSnap, ProjSnap, ResultRow, RosterEntry, ScoreRow, SmokeSnap,
   Snapshot,
 } from "../protocol";
 import { PF } from "../protocol";
 import { BotBrain, botName } from "../ai/bot";
 import { NavGrid } from "../ai/nav";
+import {
+  PAYLOAD_CHECKPOINT_BONUS, PAYLOAD_RADIUS, PAYLOAD_ROLLBACK, PAYLOAD_ROLLBACK_DELAY, PAYLOAD_SPEED, buildPayloadTrack, trackPoint,
+} from "./payload";
+import type { PayloadTrack } from "./payload";
+import { ASSIST_SCORE, GUN_LADDER, HEADSHOT_BONUS, KILL_SCORE, MEDAL_SCORES, isSoloMode } from "./config";
 
 export interface PlayerStats {
   kills: number;
@@ -70,6 +75,10 @@ export interface MatchPlayer {
   placement: number;
   bot: BotBrain | null;
   lastVt: number;
+  /** Gun Game ladder position. */
+  gunTier: number;
+  /** Kills by each opponent on this player (for Nemesis). */
+  killedBy: Map<number, number>;
 }
 
 interface Projectile {
@@ -126,6 +135,19 @@ interface Pickup {
   /** Dropped items expire instead of respawning. */
   expireAt: number;
 }
+
+/** Breakable loot crate: shoot or blast it open for a random pickup. */
+interface Crate {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  hp: number;
+  alive: boolean;
+  respawnAt: number;
+}
+
+const CRATE = { hp: 30, respawn: 25, half: 0.45 };
 
 interface Barrel {
   id: number;
@@ -203,11 +225,18 @@ export class Match {
   private smokes: Smoke[] = [];
   private pickups: Pickup[] = [];
   private barrels: Barrel[] = [];
+  private crates: Crate[] = [];
   private points: ControlPoint[] = [];
   private overclocked = 0;
   private overclockAt = 0;
   private domTickAt = 0;
   zone: Zone | null = null;
+  /** Payload track (payload mode only). Team 0 attacks, team 1 defends. */
+  track: PayloadTrack | null = null;
+  /** Cart state: distance along the track, checkpoints reached, escort counts. */
+  private cart = { d: 0, reached: 0, state: 0, idleT: 0, att: 0, def: 0, overtime: false };
+  /** Seconds added to the time limit (payload checkpoints). */
+  private timeBonus = 0;
   private cache: { x: number; y: number; z: number; until: number } | null = null;
   private nextCacheAt = 0;
   private stormUntil = 0;
@@ -243,7 +272,7 @@ export class Match {
       tacticalRate: has("overcharge") ? 2 : 1,
       maxArmor: has("glass") ? 0 : MAX_ARMOR,
     };
-    this.teamScores = new Array(cfg.mode === "ffa" || cfg.mode === "training" ? 0 : cfg.teamCount).fill(0);
+    this.teamScores = new Array(isSoloMode(cfg.mode) ? 0 : cfg.teamCount).fill(0);
     this.hooks = this.makeHooks();
     this.setupWorld();
   }
@@ -256,10 +285,16 @@ export class Match {
     return this.cfg.mode === "br";
   }
   get isFFA() {
-    return this.cfg.mode === "ffa" || this.cfg.mode === "training";
+    return isSoloMode(this.cfg.mode);
+  }
+  get isGunGame() {
+    return this.cfg.mode === "gungame";
   }
   get respawns() {
     return this.cfg.mode !== "br";
+  }
+  get isPayload() {
+    return this.cfg.mode === "payload";
   }
 
   // -------------------------------------------------------------------------
@@ -268,6 +303,10 @@ export class Match {
 
   private setupWorld(): void {
     const inArena = (p: Vec3) => p.x > this.bounds.minX && p.x < this.bounds.maxX && p.z > this.bounds.minZ && p.z < this.bounds.maxZ;
+    for (const c of this.map.crates ?? []) {
+      if (!inArena(c)) continue;
+      this.crates.push({ id: this.nextId++, x: c.x, y: c.y, z: c.z, hp: CRATE.hp, alive: true, respawnAt: 0 });
+    }
     for (const b of this.map.barrels) {
       if (!inArena(b)) continue;
       this.barrels.push({ id: this.nextId++, x: b.x, y: b.y, z: b.z, hp: BARREL.hp, alive: true, respawnAt: 0, fuse: -1, lastHitBy: -1 });
@@ -288,10 +327,15 @@ export class Match {
       this.zone = { x: 0, z: 0, r: R, fromX: 0, fromZ: 0, fromR: R, tx: 0, tz: 0, tr: R, phase: -1, shrinking: false, nextAt: 0, dps: 1 };
     } else if (this.district) {
       const respawnFor: Record<string, number> = { weapon: 22, ammo: 15, health: 20, armor: 25, grenade: 20, power: 75 };
-      for (const s of this.district.pickups) this.addPickup(s.kind, s.pos, s.weapon, respawnFor[s.kind] ?? 20, s.kind === "power");
+      for (const s of this.district.pickups) {
+        // Gun Game hands out weapons by ladder tier only.
+        if (this.isGunGame && (s.kind === "weapon" || s.kind === "power")) continue;
+        this.addPickup(s.kind, s.pos, s.weapon, respawnFor[s.kind] ?? 20, s.kind === "power");
+      }
       if (this.cfg.mode === "dom") {
         for (const p of this.district.points) this.points.push({ x: p.x, y: p.y, z: p.z, owner: -1, prog: 0, contested: false });
       }
+      if (this.isPayload) this.track = buildPayloadTrack(this.ensureNav(), this.world, this.district);
     }
     if (this.has("neonstorm")) this.nextStormAt = this.liveStart + 45;
     this.nextCacheAt = this.liveStart + (this.has("powersurge") ? 25 : 45);
@@ -327,7 +371,7 @@ export class Match {
       respawnAt: this.time, connected: true, damageLog: new Map(), lastHurt: -99, revealed: new Map(),
       downedT: 0, reviveTarget: -1, reviveT: 0, lastKillT: -99, multi: 0, lastKilledBy: -1, eliminated: false, placement: 0,
       bot: isBot ? new BotBrain(this.cfg.seed + o.id * 31, o.difficulty ?? this.cfg.botDifficulty, this.cfg.mode === "training") : null,
-      lastVt: 0,
+      lastVt: 0, gunTier: 0, killedBy: new Map(),
     };
     this.players.set(o.id, mp);
     if (isBot) this.ensureNav();
@@ -411,7 +455,9 @@ export class Match {
     const pos = this.pickSpawn(mp);
     const kit = { ...ARENA_KIT, armor: Math.min(ARENA_KIT.armor, this.env.maxArmor) };
     if (this.has("overcharge")) kit.grenades = true;
+    if (this.isGunGame) kit.grenades = false;
     resetForSpawn(mp.st, mp.loadout, kit, pos, this.faceCenterYaw(pos));
+    if (this.isGunGame) this.giveGunTier(mp, false);
     mp.st.spawnProt = SPAWN_PROTECTION;
     mp.st.team = mp.team;
     mp.respawnAt = -1;
@@ -421,9 +467,37 @@ export class Match {
     this.emit({ k: "spawn", p: mp.id });
   }
 
+  /** Gun Game: equips the weapon for the player's current ladder tier. */
+  private giveGunTier(mp: MatchPlayer, swap = true): void {
+    const id = GUN_LADDER[Math.min(mp.gunTier, GUN_LADDER.length - 1)]!;
+    const st = mp.st;
+    const slot = makeSlot(id);
+    slot.reserve = Math.max(slot.reserve, WEAPONS[id].mag * 4);
+    st.slots = [slot, null, null];
+    st.active = 0;
+    st.reloadT = st.burstLeft = 0;
+    if (swap) st.swapT = Math.min(0.35, WEAPONS[id].swapTime);
+  }
+
   private faceCenterYaw(p: Vec3): number {
     const c = this.district ? { x: (this.bounds.minX + this.bounds.maxX) / 2, z: (this.bounds.minZ + this.bounds.maxZ) / 2 } : { x: 0, z: 0 };
-    return Math.atan2(-(c.x - p.x), -(c.z - p.z));
+    const toCenter = Math.atan2(-(c.x - p.x), -(c.z - p.z));
+    // In the dense street grid the centre is often behind a building: face the
+    // most open street direction, preferring the one closest to the centre.
+    const eye = { x: p.x, y: p.y + 1.6, z: p.z };
+    let best = toCenter;
+    let bestScore = -Infinity;
+    for (const yaw of [toCenter, 0, Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      const dir = { x: -Math.sin(yaw), y: 0, z: -Math.cos(yaw) };
+      const open = Math.min(this.world.raycast(eye, dir, 30)?.t ?? 30, 30);
+      const off = Math.abs(Math.atan2(Math.sin(yaw - toCenter), Math.cos(yaw - toCenter)));
+      const score = open - off * 4;
+      if (score > bestScore) {
+        bestScore = score;
+        best = yaw;
+      }
+    }
+    return best;
   }
 
   /** Fair spawn selection: far from living enemies, out of their sight, near teammates. */
@@ -441,7 +515,13 @@ export class Match {
       }
       let mateBonus = 0;
       for (const m of mates) mateBonus = Math.max(mateBonus, 12 - Math.min(12, Math.abs(distXZ(s, m.st) - 12)));
-      return { s, score: minE - seen * 25 + mateBonus * 0.6 + this.rng.next() * 6 };
+      // Payload: attackers spawn behind the cart, defenders ahead of it.
+      let side = 0;
+      if (this.track) {
+        side = distXZ(s, trackPoint(this.track, this.cart.d + (mp.team === 0 ? -25 : 35))) * 0.9;
+        if (distXZ(s, trackPoint(this.track, this.cart.d)) < 4) side += 40; // never inside the cart
+      }
+      return { s, score: minE - seen * 25 + mateBonus * 0.6 - side + this.rng.next() * 6 };
     });
     scored.sort((a, b) => b.score - a.score);
     const s = scored[0]?.s ?? { x: 0, y: 0, z: 0 };
@@ -744,7 +824,8 @@ export class Match {
       if (remaining <= 0) break;
       const wh = this.world.raycast(o, dir, remaining, true);
       let best = wh ? wh.t : remaining;
-      let kind: "world" | "none" | "player" | "deploy" | "barrel" = wh ? "world" : "none";
+      let kind: "world" | "none" | "player" | "deploy" | "barrel" | "crate" = wh ? "world" : "none";
+      let crate: Crate | null = null;
       let tgt: TargetSnap | null = null;
       let head = false;
       let dep: Deployable | null = null;
@@ -787,6 +868,16 @@ export class Match {
           kind = "barrel";
         }
       }
+      for (const c of this.crates) {
+        if (!c.alive) continue;
+        const h = CRATE.half;
+        const t = rayAABB(o, dir, { minX: c.x - h, maxX: c.x + h, minY: c.y, maxY: c.y + h * 2, minZ: c.z - h, maxZ: c.z + h }, best);
+        if (t >= 0 && t < best) {
+          best = t;
+          crate = c;
+          kind = "crate";
+        }
+      }
       const point = { x: o.x + dir.x * best, y: o.y + dir.y * best, z: o.z + dir.z * best };
       if (kind === "player" && tgt) {
         hits.push({ victim: tgt.m, head, dist: traveled + best, point });
@@ -806,6 +897,13 @@ export class Match {
         if (dep.hp <= 0) this.destroyDeployable(dep, dep.kind !== "shield", shooter.id);
         end = point;
         type = 3;
+        break;
+      }
+      if (kind === "crate" && crate) {
+        crate.hp -= def.damage;
+        if (crate.hp <= 0) this.breakCrate(crate);
+        end = point;
+        type = 0;
         break;
       }
       if (kind === "barrel" && bar) {
@@ -923,7 +1021,7 @@ export class Match {
       const a = this.players.get(aid);
       if (!a) continue;
       a.stats.assists++;
-      a.stats.score += 50;
+      a.stats.score += ASSIST_SCORE;
       assists.push(aid);
     }
     v.damageLog.clear();
@@ -932,14 +1030,20 @@ export class Match {
       ks.kills++;
       ks.streak++;
       ks.bestStreak = Math.max(ks.bestStreak, ks.streak);
-      ks.score += 100 + (head ? 25 : 0);
+      ks.score += KILL_SCORE + (head ? HEADSHOT_BONUS : 0);
+      v.killedBy.set(killer.id, (v.killedBy.get(killer.id) ?? 0) + 1);
       ks.weaponKills[cause] = (ks.weaponKills[cause] ?? 0) + 1;
       this.awardKillMedals(killer, v, cause, head, wasStreak, o);
       // Kills score for the team in TDM only; Domination is scored by objectives.
       if (this.cfg.mode === "tdm") this.teamScores[killer.team] = (this.teamScores[killer.team] ?? 0) + 1;
+      if (this.isGunGame) this.promote(killer);
     } else if (this.cfg.mode === "ffa" && v.stats.kills > 0 && cause !== "storm") {
       // Suicides cost a point in FFA.
       v.stats.kills = Math.max(0, v.stats.kills - 1);
+    } else if (this.isGunGame && v.gunTier > 0) {
+      // Gun Game: a self-inflicted death knocks you back one weapon.
+      v.gunTier--;
+      this.emit({ k: "msg", to: v.id, t: "Demoted — back one weapon" });
     }
     this.emit({ k: "kill", kr: killer && killer !== v ? killer.id : -1, v: v.id, w: cause, h: head, as: assists });
     this.dropOnDeath(v);
@@ -949,7 +1053,19 @@ export class Match {
     }
   }
 
-  private medal(mp: MatchPlayer, m: string, score = 0): void {
+  /** Gun Game: advance the killer one weapon; a kill with the last one wins (see checkEnd). */
+  private promote(k: MatchPlayer): void {
+    k.gunTier++;
+    if (k.gunTier >= GUN_LADDER.length) return;
+    this.giveGunTier(k);
+    this.medal(k, "promoted");
+    if (k.gunTier === GUN_LADDER.length - 1) {
+      this.medal(k, "final_tier");
+      this.emit({ k: "ann", t: `${k.name} is on the FINAL weapon`, c: "bounty" });
+    }
+  }
+
+  private medal(mp: MatchPlayer, m: string, score = MEDAL_SCORES[m] ?? 0): void {
     mp.stats.medals[m] = (mp.stats.medals[m] ?? 0) + 1;
     mp.stats.score += score;
     this.emit({ k: "medal", to: mp.id, m });
@@ -958,48 +1074,60 @@ export class Match {
   private awardKillMedals(k: MatchPlayer, v: MatchPlayer, cause: string, head: boolean, victimStreak: number, o?: { src: Vec3; dist?: number }): void {
     if (!this.firstBlood) {
       this.firstBlood = true;
-      this.medal(k, "first_blood", 50);
+      this.medal(k, "first_blood");
       this.emit({ k: "ann", t: `${k.name} drew FIRST BLOOD`, c: "info" });
     }
     if (this.time - k.lastKillT < 4) k.multi++;
     else k.multi = 1;
     k.lastKillT = this.time;
-    if (k.multi === 2) this.medal(k, "double_kill", 50);
-    else if (k.multi === 3) this.medal(k, "triple_kill", 100);
-    else if (k.multi >= 4) this.medal(k, "rampage", 150);
-    if (head) this.medal(k, "headshot", 0);
-    if (o?.dist && o.dist > 45) this.medal(k, "longshot", 50);
+    if (k.multi === 2) this.medal(k, "double_kill");
+    else if (k.multi === 3) this.medal(k, "triple_kill");
+    else if (k.multi >= 4) this.medal(k, "rampage");
+    if (head) this.medal(k, "headshot");
+    if (o?.dist && o.dist > 45) this.medal(k, "longshot");
     if (v.id === k.lastKilledBy) {
-      this.medal(k, "revenge", 50);
+      this.medal(k, "revenge");
       k.lastKilledBy = -1;
     }
     if (victimStreak >= 5) {
-      this.medal(k, "shutdown", 150);
+      this.medal(k, "shutdown");
       this.emit({ k: "ann", t: `${k.name} collected the bounty on ${v.name}`, c: "bounty" });
     }
-    if (cause === "frag" || cause === "nova" || cause === "mine" || cause === "remote" || cause === "barrel") this.medal(k, "demolition", 25);
-    if (k.st.health > 0 && k.st.health < 25) this.medal(k, "clutch", 50);
-    if (!k.st.onGround) this.medal(k, "airborne", 25);
+    if (cause === "frag" || cause === "nova" || cause === "mine" || cause === "remote" || cause === "barrel") this.medal(k, "demolition");
+    if (k.st.health > 0 && k.st.health < 25) this.medal(k, "clutch");
+    if (!k.st.onGround) this.medal(k, "airborne");
+    if (k.st.slideT > 0) this.medal(k, "slide_kill");
+    // Nemesis: payback on the player who has eliminated you the most (3+ times).
+    if ((k.killedBy.get(v.id) ?? 0) >= 3) {
+      this.medal(k, "nemesis");
+      k.killedBy.set(v.id, 0);
+    }
     const s = k.stats.streak;
     if (s === 3) {
-      this.medal(k, "streak_3", 50);
+      this.medal(k, "streak_3");
       // Reward: team-wide radar sweep.
       for (const e of this.players.values()) if (e.team !== k.team || this.isFFA) if (e !== k) e.revealed.set(k.team, this.time + 5);
       this.emit({ k: "ann", t: "RADAR SWEEP online", c: "streak", tm: k.team });
     } else if (s === 5) {
-      this.medal(k, "streak_5", 100);
+      this.medal(k, "streak_5");
       k.st.overdrive = 15;
       k.st.armor = this.env.maxArmor;
       this.emit({ k: "ann", t: `${k.name} is on a 5 streak — BOUNTY placed`, c: "bounty" });
     } else if (s === 8) {
-      this.medal(k, "streak_8", 150);
+      this.medal(k, "streak_8");
+      // Reward: full restock — health, armor, ammo and a long Overdrive.
+      k.st.health = MAX_HEALTH;
+      k.st.armor = this.env.maxArmor;
+      k.st.overdrive = 20;
+      for (const sl of k.st.slots) if (sl) sl.reserve = Math.max(sl.reserve, WEAPONS[sl.id].reserve);
       this.emit({ k: "ann", t: `${k.name} is UNSTOPPABLE (8 streak)`, c: "bounty" });
     }
     // Objective defence.
+    if (this.track && k.team === 1 && distXZ(trackPoint(this.track, this.cart.d), v.st) < 10) this.medal(k, "defender");
     if (this.cfg.mode === "dom") {
       for (const cp of this.points)
         if (cp.owner === k.team && distXZ(cp, v.st) < 10) {
-          this.medal(k, "defender", 50);
+          this.medal(k, "defender");
           break;
         }
     }
@@ -1050,7 +1178,7 @@ export class Match {
           mp.reviveTarget = -1;
           mp.reviveT = 0;
           mp.stats.revives++;
-          this.medal(mp, "revive", 100);
+          this.medal(mp, "revive");
           this.emit({ k: "revive", v: target.id, by: mp.id });
         }
         return;
@@ -1221,10 +1349,9 @@ export class Match {
     mp.st.overdrive = 20;
     mp.st.armor = this.env.maxArmor;
     mp.st.tacCd = 0;
-    mp.stats.score += 150;
     if (this.cfg.mode === "tdm") this.teamScores[mp.team] = (this.teamScores[mp.team] ?? 0) + 3;
     else if (this.cfg.mode === "dom") this.teamScores[mp.team] = (this.teamScores[mp.team] ?? 0) + 10;
-    this.medal(mp, "data_heist", 0);
+    this.medal(mp, "data_heist");
     this.emit({ k: "ann", t: `${mp.name} cracked the DATA CACHE — Overdrive active`, c: "cache" });
   }
 
@@ -1483,6 +1610,7 @@ export class Match {
       this.applyDamage(o, dmg, owner, cause, { src: c, explosive: true });
     }
     for (const d of [...this.deployables]) if (dist3(d, c) < radius * 0.7) this.destroyDeployable(d, d.kind !== "shield", ownerId);
+    for (const cr of this.crates) if (cr.alive && dist3(cr, c) < radius * 0.8) this.breakCrate(cr);
     for (const b of this.barrels) {
       if (b.alive && b.fuse < 0 && dist3(b, c) < radius * 0.8) {
         b.fuse = 0.18;
@@ -1507,7 +1635,26 @@ export class Match {
     return false;
   }
 
+  /** Pops a crate open and drops a random pickup where it stood. */
+  private breakCrate(c: Crate): void {
+    if (!c.alive) return;
+    c.alive = false;
+    c.respawnAt = this.time + CRATE.respawn;
+    const r = this.rng.next();
+    let kind: Pickup["kind"] = r < 0.3 ? "ammo" : r < 0.55 ? "health" : r < 0.75 ? "armor" : r < 0.9 ? "grenade" : "weapon";
+    if (this.isGunGame && (kind === "weapon" || kind === "grenade")) kind = "ammo";
+    const pk = this.addPickup(kind, { x: c.x, y: c.y + 0.05, z: c.z }, kind === "weapon" ? this.rng.pick(PRIMARY_IDS) : undefined, 0);
+    pk.expireAt = this.time + 30;
+    this.emit({ k: "boom", x: r2(c.x), y: r2(c.y + 0.5), z: r2(c.z), r: 1, t: "crate" });
+  }
+
   private updateWorldEntities(dt: number): void {
+    for (const c of this.crates) {
+      if (!c.alive && this.respawns && this.time >= c.respawnAt) {
+        c.alive = true;
+        c.hp = CRATE.hp;
+      }
+    }
     for (const b of this.barrels) {
       if (b.alive && b.fuse >= 0) {
         b.fuse -= dt;
@@ -1568,6 +1715,7 @@ export class Match {
       }
     }
     if (this.cfg.mode === "dom") this.updateDomination(dt);
+    if (this.track) this.updatePayload(dt);
     if (this.isBR) this.updateZone();
   }
 
@@ -1604,7 +1752,7 @@ export class Match {
         for (const p of this.players.values())
           if (p.team === team && p.st.alive && distXZ(p.st, cp) < 5) {
             p.stats.captures++;
-            this.medal(p, "capture", 150);
+            this.medal(p, "capture");
           }
         this.emit({ k: "ann", t: `Point ${"ABC"[i]} captured`, c: "objective", tm: team });
         this.emit({ k: "ann", t: `Point ${"ABC"[i]} lost`, c: "warn", tm: 1 - team });
@@ -1617,6 +1765,62 @@ export class Match {
         if (cp.owner >= 0) this.teamScores[cp.owner] = (this.teamScores[cp.owner] ?? 0) + (i === this.overclocked ? 2 : 1);
       }
     }
+  }
+
+  private updatePayload(dt: number): void {
+    const tr = this.track!;
+    const c = this.cart;
+    const at = trackPoint(tr, c.d);
+    const escorts: MatchPlayer[] = [];
+    let def = 0;
+    for (const p of this.players.values()) {
+      if (!p.st.alive || p.st.downed) continue;
+      if (distXZ(p.st, at) > PAYLOAD_RADIUS || Math.abs(p.st.y - at.y) > 3) continue;
+      if (p.team === 0) escorts.push(p);
+      else def++;
+    }
+    c.att = escorts.length;
+    c.def = def;
+    if (escorts.length > 0) c.idleT = 0;
+    else c.idleT += dt;
+    const floor = tr.checkpoints[c.reached - 1] ?? 0;
+    if (escorts.length > 0 && def === 0) {
+      c.state = 1;
+      const before = c.d;
+      c.d = Math.min(tr.length, c.d + PAYLOAD_SPEED * Math.min(1.45, 1 + 0.15 * (escorts.length - 1)) * dt);
+      // Escort score: 10 per metre pushed.
+      if (Math.floor(c.d) > Math.floor(before)) for (const p of escorts) p.stats.score += 10;
+      while (c.reached < tr.checkpoints.length && c.d >= tr.checkpoints[c.reached]!) {
+        c.reached++;
+        this.timeBonus += PAYLOAD_CHECKPOINT_BONUS;
+        for (const p of escorts) {
+          p.stats.captures++;
+          this.medal(p, "checkpoint");
+        }
+        this.emit({ k: "ann", t: `Checkpoint ${c.reached} reached — +${PAYLOAD_CHECKPOINT_BONUS}s`, c: "objective", tm: 0 });
+        this.emit({ k: "ann", t: `Checkpoint ${c.reached} lost — attackers gain ${PAYLOAD_CHECKPOINT_BONUS}s`, c: "warn", tm: 1 });
+      }
+      if (c.d >= tr.length) for (const p of escorts) this.medal(p, "delivery");
+    } else if (escorts.length > 0) {
+      c.state = 2;
+    } else if (c.idleT > PAYLOAD_ROLLBACK_DELAY && c.d > floor) {
+      // Left alone: roll back, but never past the last checkpoint.
+      c.state = 3;
+      c.d = Math.max(floor, c.d - PAYLOAD_ROLLBACK * dt);
+    } else c.state = 0;
+    const pct = Math.floor((100 * c.d) / tr.length);
+    this.teamScores[0] = pct;
+    this.teamScores[1] = 100 - pct;
+  }
+
+  /** Current payload position (payload mode only). */
+  payloadPos(): Vec3 | null {
+    return this.track ? trackPoint(this.track, this.cart.d) : null;
+  }
+
+  /** Read-only view of the cart state (payload mode). */
+  payloadState(): Readonly<{ d: number; reached: number; state: number; att: number; def: number; overtime: boolean }> {
+    return this.cart;
   }
 
   private advanceZone(): void {
@@ -1663,6 +1867,16 @@ export class Match {
   /** Where an idle bot should head (objectives, zone, loot). */
   botObjective(me: MatchPlayer): Vec3 | null {
     const st = me.st;
+    if (this.track) {
+      // Attackers ride with the cart; defenders hold the road ahead and
+      // jump on the cart to contest it once it is being pushed.
+      const c = this.cart;
+      const spread = ((me.id % 5) - 2) * 1.1;
+      const contest = me.team !== 0 && c.att > 0;
+      const ahead = me.team === 0 ? 1 + (me.id % 3) : contest ? 0.5 + (me.id % 2) : 12 + (me.id % 4) * 4;
+      const p = trackPoint(this.track, c.d + ahead);
+      return { x: p.x + Math.cos(p.yaw) * spread, y: p.y, z: p.z - Math.sin(p.yaw) * spread };
+    }
     if (this.cfg.mode === "dom" && this.points.length) {
       let best: ControlPoint | null = null;
       let bd = Infinity;
@@ -1691,6 +1905,8 @@ export class Match {
         if (!pk.active) continue;
         if (needWeapon && pk.kind !== "weapon") continue;
         if (!needWeapon && pk.kind === "weapon") continue;
+        // Bots navigate at street level; skip loot on rooftops and upper floors.
+        if (Math.abs(pk.y - st.y) > 2.5) continue;
         const d = dist3(pk, st);
         if (d < bd) {
           bd = d;
@@ -1723,7 +1939,7 @@ export class Match {
   private checkEnd(): void {
     if (this.phase !== "live") return;
     const elapsed = this.time - this.liveStart;
-    const timeUp = elapsed >= this.cfg.timeLimit;
+    const timeUp = elapsed >= this.cfg.timeLimit + this.timeBonus;
     let winner = -2;
     let reason = "";
     switch (this.cfg.mode) {
@@ -1752,6 +1968,18 @@ export class Match {
         }
         break;
       }
+      case "gungame": {
+        const top = [...this.players.values()].find((p) => p.gunTier >= GUN_LADDER.length);
+        if (top) {
+          winner = top.team;
+          reason = "Final weapon kill";
+        } else if (timeUp) {
+          const sorted = [...this.players.values()].sort((a, b) => b.gunTier - a.gunTier || b.stats.kills - a.stats.kills);
+          winner = sorted.length > 1 && sorted[0]!.gunTier === sorted[1]!.gunTier ? -1 : sorted[0]?.team ?? -1;
+          reason = "Time limit reached";
+        }
+        break;
+      }
       case "br": {
         const alive = new Set([...this.players.values()].filter((p) => p.st.alive).map((p) => p.team));
         const total = new Set([...this.players.values()].map((p) => p.team));
@@ -1764,6 +1992,25 @@ export class Match {
         } else if (timeUp) {
           winner = -1;
           reason = "Time limit reached";
+        }
+        break;
+      }
+      case "payload": {
+        const c = this.cart;
+        if (this.track && c.d >= this.track.length) {
+          winner = 0;
+          reason = "Payload delivered";
+        } else if (timeUp) {
+          // Overtime while attackers stay on the cart (capped at 60 s).
+          if (c.att > 0 && elapsed < this.cfg.timeLimit + this.timeBonus + 60) {
+            if (!c.overtime) {
+              c.overtime = true;
+              this.emit({ k: "ann", t: "OVERTIME — keep the payload moving", c: "warn" });
+            }
+          } else {
+            winner = 1;
+            reason = "Defenders held the line";
+          }
         }
         break;
       }
@@ -1816,7 +2063,7 @@ export class Match {
 
   timeLeft(): number {
     if (this.phase === "starting") return Math.max(0, this.phaseEnd - this.time);
-    return Math.max(0, this.cfg.timeLimit - (this.time - this.liveStart));
+    return Math.max(0, this.cfg.timeLimit + this.timeBonus - (this.time - this.liveStart));
   }
 
   matchState(): Snapshot["m"] {
@@ -1827,6 +2074,14 @@ export class Match {
       m.zn = { x: r2(z.x), z: r2(z.z), r: r2(z.r), tx: r2(z.tx), tz: r2(z.tz), tr: r2(z.tr), n: Math.max(0, Math.round(z.nextAt - this.time)), s: z.shrinking, dps: z.dps };
       m.al = new Set([...this.players.values()].filter((p) => p.st.alive).map((p) => p.team)).size;
     }
+    if (this.track) {
+      const c = this.cart;
+      const p = trackPoint(this.track, c.d);
+      const pl: PayloadSnap = {
+        x: r2(p.x), y: r2(p.y), z: r2(p.z), yw: r3(p.yaw), p: r3(c.d / this.track.length), r: c.reached, s: c.state, n: c.att, ot: c.overtime,
+      };
+      m.pl = pl;
+    }
     m.dc = this.cache ? [r2(this.cache.x), r2(this.cache.y), r2(this.cache.z)] : null;
     if (this.stormUntil > this.time) m.storm = Math.round(this.stormUntil - this.time);
     return m;
@@ -1835,6 +2090,7 @@ export class Match {
   scoreRows(): ScoreRow[] {
     return [...this.players.values()].map((p) => ({
       i: p.id, k: p.stats.kills, d: p.stats.deaths, a: p.stats.assists, s: p.stats.score, st: p.stats.streak, pl: p.placement, c: p.connected || p.isBot,
+      ...(this.isGunGame ? { gt: Math.min(p.gunTier, GUN_LADDER.length - 1) } : {}),
     }));
   }
 
@@ -1889,6 +2145,7 @@ export class Match {
       .filter((p) => p.active && near(p, PICKUP_INTEREST_RADIUS))
       .map((p) => ({ i: p.id, k: p.kind, w: p.weapon, x: r2(p.x), y: r2(p.y), z: r2(p.z) }));
     const br = this.barrels.filter((b) => !b.alive).map((b) => b.id);
+    const cr = this.crates.filter((c) => !c.alive).map((c) => c.id);
     const ev = this.events.filter((e) => {
       if ("to" in e) return e.to === id;
       if ((e.k === "ann" || e.k === "scan") && e.tm !== undefined) return e.tm === team;
@@ -1896,11 +2153,16 @@ export class Match {
     });
     const snap: Snapshot = {
       t: Math.round(this.time * 1000) / 1000, tick: this.tick, ack: me?.lastSeq ?? -1, me: me ? me.st : null,
-      ps, pr, dp, sm, pk, br, m: this.matchState(), ev,
+      ps, pr, dp, sm, pk, br, cr, m: this.matchState(), ev,
     };
     if (spec !== undefined) snap.spec = spec;
     if (withScores) snap.sb = this.scoreRows();
     return snap;
+  }
+
+  /** Crate ids/positions for clients (static list, broken state via snapshot). */
+  crateList(): { i: number; x: number; y: number; z: number }[] {
+    return this.crates.map((c) => ({ i: c.id, x: c.x, y: c.y, z: c.z }));
   }
 
   /** Barrel ids/positions for clients (static list, alive state via snapshot). */

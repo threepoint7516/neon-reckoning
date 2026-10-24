@@ -90,11 +90,11 @@ describe("game server", () => {
     c.ws.close();
   });
 
-  it("enforces party size: solo can't queue for squads without fill", async () => {
+  it("enforces party size: solo can't queue for BR squads without fill", async () => {
     const c = await connect("Solo");
     c.send({ t: "party_create" });
     await c.wait("party", (m) => !!m.party);
-    c.send({ t: "party_settings", mode: "tdm", size: 4, fill: false, bots: false });
+    c.send({ t: "party_settings", mode: "br", size: 4, fill: false, bots: false });
     await c.wait("party", (m) => m.party?.size === 4);
     c.send({ t: "queue" });
     expect((await c.wait("error")).code).toBe("party_too_small");
@@ -126,7 +126,7 @@ describe("game server", () => {
     const startPos = first.s.ps.find((p) => p.i === sa.info.you)!;
     let seq = 1;
     for (let k = 0; k < 30; k++) {
-      a.send({ t: "input", i: Array.from({ length: 4 }, () => ({ seq: seq++, mx: 0, mz: 1, yaw: 0, pitch: 0, b: Btn.SPRINT, vt: 0 })) });
+      a.send({ t: "input", i: Array.from({ length: 4 }, () => ({ seq: seq++, mx: 0, mz: 1, yaw: startPos.yw, pitch: 0, b: Btn.SPRINT, vt: 0 })) });
       await new Promise((r) => setTimeout(r, 60));
     }
     const later = await b.wait("snap", (m) => {
@@ -168,6 +168,60 @@ describe("game server", () => {
     c.send({ t: "leave_match" });
     c.ws.close();
   }, 20000);
+
+  it("solo TDM starts as a full 6v6 with bots; latecomers drop in for a bot and bots replace leavers", async () => {
+    const a = await connect("Lonely");
+    a.send({ t: "party_create" });
+    await a.wait("party", (m) => !!m.party);
+    a.send({ t: "party_settings", mode: "tdm", size: 1, fill: true, bots: true });
+    await a.wait("party", (m) => m.party?.mode === "tdm");
+    const queuedAt = Date.now();
+    a.send({ t: "queue" });
+    const sa = await a.wait("match_start", () => true, 10000);
+    expect(Date.now() - queuedAt).toBeLessThan(6000);
+    expect(sa.info.roster.length).toBe(12);
+    expect(sa.info.roster.filter((r) => r.bot).length).toBe(11);
+    expect(sa.info.roster.filter((r) => r.bot).every((r) => r.n.startsWith("BOT "))).toBe(true);
+
+    // A second player queuing for TDM joins the running match in place of a bot.
+    const b = await connect("Latecomer");
+    b.send({ t: "party_create" });
+    await b.wait("party", (m) => !!m.party);
+    b.send({ t: "party_settings", mode: "tdm", size: 1, fill: true, bots: true });
+    await b.wait("party", (m) => m.party?.mode === "tdm");
+    b.send({ t: "queue" });
+    const sb = await b.wait("match_start", () => true, 5000);
+    expect(sb.info.matchId).toBe(sa.info.matchId);
+    expect(sb.info.roster.length).toBe(12);
+    expect(sb.info.roster.filter((r) => !r.bot).length).toBe(2);
+    await a.wait("roster", (m) => m.roster.length === 12 && m.roster.filter((x) => !x.bot).length === 2);
+
+    // When they leave, a labelled bot takes their slot so the teams stay 6v6.
+    a.msgs.length = 0;
+    b.send({ t: "leave_match" });
+    const r = await a.wait("roster", (m) => m.roster.filter((x) => !x.bot).length === 1);
+    expect(r.roster.length).toBe(12);
+    a.send({ t: "leave_match" });
+    a.ws.close();
+    b.ws.close();
+  }, 30000);
+
+  it("queues Gun Game online as a full 12-player match on the weapon ladder", async () => {
+    const c = await connect("Laddered");
+    c.send({ t: "party_create" });
+    await c.wait("party", (m) => !!m.party);
+    c.send({ t: "party_settings", mode: "gungame", size: 1, fill: true, bots: true });
+    await c.wait("party", (m) => m.party?.mode === "gungame");
+    c.send({ t: "queue" });
+    const ms = await c.wait("match_start", () => true, 10000);
+    expect(ms.info.config.mode).toBe("gungame");
+    expect(ms.info.roster.length).toBe(12);
+    expect(new Set(ms.info.roster.map((r) => r.t)).size).toBe(12);
+    const snap = await c.wait("snap", (m) => !!m.s.me && m.s.me.alive, 10000);
+    expect(snap.s.me!.slots[0]?.id).toBe("arcstorm");
+    c.send({ t: "leave_match" });
+    c.ws.close();
+  }, 25000);
 
   it("disconnects clients that spam invalid messages", async () => {
     const c = await connect("Spammer");

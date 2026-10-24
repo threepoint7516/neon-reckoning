@@ -1,11 +1,16 @@
 import { randomInt } from "node:crypto";
 import {
-  DISTRICT_IDS, PROTOCOL_VERSION, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, isValidRoomCode, makeMatchConfig,
+  DISTRICT_IDS, ONLINE_TEAM_SIZE, PROTOCOL_VERSION, isSoloMode, ROOM_CODE_ALPHABET, ROOM_CODE_LENGTH, isValidRoomCode, makeMatchConfig,
 } from "@neon/shared";
 import type { ClientMessage, Difficulty, MatchConfig, PartySize, PartyState, QueueMode } from "@neon/shared";
 import type { Session } from "./session";
 import { Room } from "./room";
 import { config, log } from "./config";
+
+/** Team size a party plays in: BR keeps squads, FFA is solo, other team modes are always 6v6. */
+export function teamSizeFor(mode: QueueMode, partySize: number): number {
+  return mode === "br" ? partySize : isSoloMode(mode) ? 1 : ONLINE_TEAM_SIZE;
+}
 
 export interface Party {
   code: string;
@@ -103,10 +108,10 @@ export class Lobby {
         if (!p) return s.error("no_party", "You're not in a party.");
         if (p.leader !== s) return s.error("not_leader", "Only the party leader can change settings.");
         if (p.status !== "idle") return s.error("busy", "Cancel matchmaking before changing settings.");
-        if (m.mode !== "ffa" && p.members.length > m.size)
+        if (!isSoloMode(m.mode) && p.members.length > m.size)
           return s.error("party_too_big", `Your party has ${p.members.length} players — choose a squad size of at least ${p.members.length}.`);
         p.mode = m.mode;
-        p.size = m.mode === "ffa" ? 1 : m.size;
+        p.size = isSoloMode(m.mode) ? 1 : m.size;
         p.fill = m.fill;
         p.bots = m.bots;
         this.pushParty(p);
@@ -196,7 +201,7 @@ export class Lobby {
     if (s.party) this.leaveParty(s);
     p.members.push(s);
     s.party = p;
-    if (p.mode !== "ffa" && p.size < p.members.length) p.size = Math.min(4, p.members.length) as PartySize;
+    if (!isSoloMode(p.mode) && p.size < p.members.length) p.size = Math.min(4, p.members.length) as PartySize;
     this.pushParty(p);
   }
 
@@ -245,7 +250,7 @@ export class Lobby {
     if (p.status !== "idle") return;
     if (p.members.some((m) => !p.ready.has(m.id))) return s.error("not_ready", "Everyone in the party must be ready.");
     if (p.members.some((m) => m.room)) return s.error("busy", "A party member is still in a match.");
-    if (p.mode !== "ffa") {
+    if (p.mode === "br") {
       if (p.members.length > p.size) return s.error("party_too_big", "Your party is larger than the squad size.");
       if (p.members.length < p.size && !p.fill)
         return s.error(
@@ -256,7 +261,43 @@ export class Lobby {
     p.status = "queued";
     p.queuedAt = Date.now();
     this.pushParty(p);
+    if (this.dropIn(p)) return;
     this.matchmake();
+  }
+
+  /**
+   * Puts a queued party straight into a running match of the same mode by
+   * taking over bot slots, so humans play together whenever possible.
+   */
+  private dropIn(p: Party): boolean {
+    if (p.mode === "br" || !p.bots) return false;
+    const n = p.members.length;
+    // Prefer the busiest match (play with humans), then the team with the most bots (keeps teams balanced).
+    let best: { room: Room; team: number | null; score: number } | null = null;
+    for (const room of this.rooms) {
+      if (room.match.cfg.mode !== p.mode || !room.acceptsDropIn() || room.private) continue;
+      const teams = isSoloMode(p.mode) ? [null] : [0, 1];
+      for (const team of teams) {
+        const bots = room.botsOn(team).length;
+        if (bots < n) continue;
+        const score = room.humanCount() * 100 + bots;
+        if (!best || score > best.score) best = { room, team, score };
+      }
+    }
+    if (!best) return false;
+    best.room.dropIn(p.members, best.team);
+    p.status = "in_match";
+    p.queueInfo = undefined;
+    this.pushParty(p);
+    log("info", `party joined running room ${best.room.id} (${p.mode}) in place of ${n} bot(s)`);
+    return true;
+  }
+
+  /** Seconds to wait for more humans before AI fill: short when nobody else is around to join. */
+  private fillWait(queued: Party[]): number {
+    const queuedIds = new Set(queued.flatMap((p) => p.members.map((m) => m.id)));
+    const idleOthers = [...this.sessions].some((s) => !s.room && !queuedIds.has(s.id));
+    return idleOthers ? config.aiFillWait : config.aiFillWaitAlone;
   }
 
   /** Runs every second: forms matches from compatible queued parties. */
@@ -265,7 +306,7 @@ export class Lobby {
     const groups = new Map<string, Party[]>();
     for (const p of this.parties.values()) {
       if (p.status !== "queued") continue;
-      const k = `${p.mode}:${p.mode === "ffa" ? 1 : p.size}`;
+      const k = `${p.mode}:${teamSizeFor(p.mode, p.size)}`;
       (groups.get(k) ?? groups.set(k, []).get(k)!).push(p);
     }
     for (const [key, parties] of groups) {
@@ -276,14 +317,15 @@ export class Lobby {
       const oldest = (now - parties[0]!.queuedAt) / 1000;
       const humans = parties.reduce((a, p) => a + p.members.length, 0);
       const botsOk = (ps: Party[]) => ps.length > 0 && ps.every((p) => p.bots);
+      const wait = this.fillWait(parties);
       let started = false;
 
-      if (mode === "ffa") {
+      if (isSoloMode(mode)) {
         const packed: Party[] = [];
         let n = 0;
         for (const p of parties) if (n + p.members.length <= cfg.maxPlayers) packed.push(p), (n += p.members.length);
-        if (n >= cfg.maxPlayers || (n >= 2 && oldest >= 30) || (botsOk(packed) && oldest >= config.aiFillWait)) {
-          started = this.start(cfg, packed.map((p) => [p]), botsOk(packed) ? Math.max(n, 8) : n);
+        if (n >= cfg.maxPlayers || (n >= 2 && oldest >= 30) || (botsOk(packed) && oldest >= wait)) {
+          started = this.start(cfg, packed.map((p) => [p]), botsOk(packed) ? cfg.maxPlayers : n);
         }
       } else {
         const teams = formTeams(parties, size);
@@ -291,18 +333,17 @@ export class Lobby {
         const wantTeams = mode === "br" ? cfg.teamCount : 2;
         if (complete.length >= wantTeams) started = this.start(cfg, complete.slice(0, wantTeams), cfg.maxPlayers);
         else if (mode === "br" && complete.length >= 2 && oldest >= 45) started = this.start(cfg, complete, complete.length * size);
-        else if (oldest >= config.aiFillWait) {
+        else if (oldest >= wait) {
           const use = [...complete, ...teams.filter((t) => !complete.includes(t))].slice(0, wantTeams);
           const flat = use.flat();
           if (botsOk(flat)) {
-            const totalTeams = mode === "br" ? Math.min(wantTeams, Math.max(use.length, 6)) : 2;
-            started = this.start(cfg, use, totalTeams * size);
+            started = this.start(cfg, use, wantTeams * size);
           }
         }
       }
 
       if (!started) {
-        const aiFillIn = botsOk(parties) ? Math.max(0, Math.ceil(config.aiFillWait - oldest)) : null;
+        const aiFillIn = botsOk(parties) ? Math.max(0, Math.ceil(wait - oldest)) : null;
         for (const p of parties) {
           p.queueInfo = { waiting: humans, needed: cfg.maxPlayers, since: p.queuedAt, aiFillIn };
           this.pushParty(p);
@@ -316,17 +357,18 @@ export class Lobby {
    * per entry, each member on their own team). `target` is the total player
    * count to reach with clearly-labelled AI bots (never disguised as humans).
    */
-  private start(cfg: MatchConfig, teams: Party[][], target: number, difficulty: Difficulty = "standard"): boolean {
+  private start(cfg: MatchConfig, teams: Party[][], target: number, difficulty: Difficulty = "standard", isPrivate = false): boolean {
     if (this.rooms.size >= config.maxRooms) {
       for (const p of teams.flat()) for (const m of p.members) m.error("server_full", "All match servers are busy. Try again in a minute, or play Practice.");
       return false;
     }
     cfg.botDifficulty = difficulty;
     const room = new Room(cfg, (r) => this.onRoomClosed(r));
+    room.private = isPrivate;
     this.rooms.add(room);
     let humans = 0;
     const totalHumans = teams.flat().reduce((a, p) => a + p.members.length, 0);
-    if (cfg.mode === "ffa") {
+    if (isSoloMode(cfg.mode)) {
       let t = 0;
       for (const team of teams) for (const p of team) for (const m of p.members) room.addHuman(m, t++, t, m.loadout), humans++;
       for (let i = humans; i < Math.min(target, cfg.maxPlayers); i++) room.addBot(t++, t);
@@ -355,16 +397,16 @@ export class Lobby {
     if (p.status !== "idle") return s.error("busy", "Cancel matchmaking first.");
     if (p.members.some((m) => m.room)) return s.error("busy", "A party member is still in a match.");
     if (!p.bots && p.members.length < 2) return s.error("need_players", "A private match needs 2+ players, or enable AI fill to add bots.");
-    const size = p.mode === "ffa" ? 1 : p.mode === "br" ? Math.max(1, p.size) : Math.max(p.size, Math.ceil(p.members.length / 2));
+    const size = isSoloMode(p.mode) ? 1 : p.mode === "br" ? Math.max(1, p.size) : p.bots ? ONLINE_TEAM_SIZE : Math.max(p.size, Math.ceil(p.members.length / 2));
     const cfg = makeMatchConfig({ mode: p.mode, arena: DISTRICT_IDS[randomInt(DISTRICT_IDS.length)]!, teamSize: size, offline: false, difficulty });
     // Split the party: TDM/DOM alternate members across teams so friends can face each other.
     const fake = (members: Session[]): Party => ({ ...p, members });
     let teams: Party[][];
-    if (p.mode === "ffa") teams = p.members.map((m) => [fake([m])]);
+    if (isSoloMode(p.mode)) teams = p.members.map((m) => [fake([m])]);
     else if (p.mode === "br") teams = p.bots ? [[fake(p.members)]] : p.members.map((m) => [fake([m])]);
     else teams = [[fake(p.members.filter((_, i) => i % 2 === 0))], [fake(p.members.filter((_, i) => i % 2 === 1))]];
-    const target = p.bots ? (p.mode === "ffa" ? 6 : p.mode === "br" ? 6 * size : cfg.maxPlayers) : p.members.length;
-    if (this.start(cfg, teams, target, difficulty)) {
+    const target = p.bots ? cfg.maxPlayers : p.members.length;
+    if (this.start(cfg, teams, target, difficulty, true)) {
       p.status = "in_match";
       this.pushParty(p);
     }

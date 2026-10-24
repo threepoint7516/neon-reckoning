@@ -108,11 +108,11 @@ export function GameView() {
     <div className="game-root">
       <canvas ref={canvasRef} onClick={() => game && !paused && game.requestLock()} />
       {!game && !error && (
-        <div className="overlay" style={{ background: "#07060f", flexDirection: "column", textAlign: "center" }}>
+        <div className="overlay" style={{ background: "linear-gradient(180deg, #0b1a45, #2a4f8a)", flexDirection: "column", textAlign: "center" }}>
           <div className="tagline" style={{ marginTop: 0 }}>
             {MODE_INFO[cfg.mode].name} {match.offline ? "· Practice (offline)" : "· Online"}
           </div>
-          <h1 className="glow-mag" style={{ fontSize: 56, margin: "10px 0", letterSpacing: "0.12em", fontStyle: "italic" }}>
+          <h1 style={{ fontSize: 60, margin: "10px 0", fontWeight: 900, color: "#ffd23f", WebkitTextStroke: "3px #1f2a44", textShadow: "0 6px 0 #1f2a44" }}>
             {meta.name.toUpperCase()}
           </h1>
           <div className="muted">{meta.tagline}</div>
@@ -156,7 +156,7 @@ export function GameView() {
       {game && game.mapOpen && !paused && <MapOverlay game={game} />}
       {game && showClick && game.hud.alive && (
         <div className="click-to-play" onClick={() => game.requestLock()}>
-          <div className="glow-cyan" style={{ fontSize: 28, fontWeight: 900, letterSpacing: "0.3em" }}>
+          <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: "0.12em", color: "#ffd23f", WebkitTextStroke: "2px #1f2a44", textShadow: "0 4px 0 #1f2a44" }}>
             CLICK TO PLAY
           </div>
           <div className="small muted">Mouse is captured while playing · Esc opens the menu</div>

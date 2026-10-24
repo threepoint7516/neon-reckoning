@@ -6,6 +6,7 @@ import { WEAPONS } from "../balance/weapons";
 import { eyePos } from "../sim/player";
 import type { PlayerInput, Difficulty } from "../types";
 import type { Match, MatchPlayer } from "../sim/match";
+import type { NavPoint } from "./nav";
 
 interface Skill {
   reaction: number;
@@ -43,7 +44,7 @@ export class BotBrain {
   private seenT = 0;
   private lastKnown: Vec3 | null = null;
   private lostT = 0;
-  private path: Vec3[] = [];
+  private path: NavPoint[] = [];
   private pathI = 0;
   private goal: Vec3 | null = null;
   private repathT = 0;
@@ -287,22 +288,29 @@ export class BotBrain {
     const len = Math.hypot(toT.x, toT.z) || 1;
     toT.x /= len;
     toT.z /= len;
-    let wx = 0;
-    let wz = 0;
-    if (dist > ideal + 6) {
-      wx += toT.x;
-      wz += toT.z;
-    } else if (dist < ideal - 5) {
-      wx -= toT.x;
-      wz -= toT.z;
+    // Payload: fight on the move back to the cart (or the defensive line).
+    const obj = m.isPayload ? m.botObjective(me) : null;
+    if (obj && distXZ(obj, st) > (me.team === 0 ? 4 : 8)) {
+      this.navigate(m, me, inp, obj);
+      inp.b &= ~Btn.SPRINT;
+    } else {
+      let wx = 0;
+      let wz = 0;
+      if (dist > ideal + 6) {
+        wx += toT.x;
+        wz += toT.z;
+      } else if (dist < ideal - 5) {
+        wx -= toT.x;
+        wz -= toT.z;
+      }
+      if (this.strafeT <= 0) {
+        this.strafeT = 0.5 + this.rng.next() * 1.1;
+        if (this.rng.next() < 0.6) this.strafeDir *= -1;
+      }
+      wx += -toT.z * this.strafeDir * sk.strafe;
+      wz += toT.x * this.strafeDir * sk.strafe;
+      this.applyMove(inp, wx, wz);
     }
-    if (this.strafeT <= 0) {
-      this.strafeT = 0.5 + this.rng.next() * 1.1;
-      if (this.rng.next() < 0.6) this.strafeDir *= -1;
-    }
-    wx += -toT.z * this.strafeDir * sk.strafe;
-    wz += toT.x * this.strafeDir * sk.strafe;
-    this.applyMove(inp, wx, wz);
 
     if (sk.tactics && this.crouchT <= 0 && this.rng.next() < 0.01) this.crouchT = 0.8;
     if (this.crouchT > 0) inp.b |= Btn.CROUCH;
@@ -343,8 +351,11 @@ export class BotBrain {
     const st = me.st;
     const eye = eyePos(st);
     let dest: Vec3 | null = null;
-    if (this.lastKnown && !this.passive) dest = this.lastKnown;
-    if (!dest) dest = m.botObjective(me);
+    const obj = m.botObjective(me);
+    // Payload: never wander off chasing sounds while far from the cart.
+    const tethered = !!obj && m.isPayload && distXZ(obj, st) > 12;
+    if (this.lastKnown && !this.passive && !tethered) dest = this.lastKnown;
+    if (!dest) dest = obj;
     if (!dest) {
       if (!this.goal || distXZ(this.goal, st) < 3) {
         const k = m.nav ? m.nav.randomCell(this.rng, st, 40) : -1;
@@ -367,19 +378,27 @@ export class BotBrain {
 
   private navigate(m: Match, me: MatchPlayer, inp: PlayerInput, dest: Vec3, faceTravel = false): void {
     const st = me.st;
-    if (!m.nav) {
+    // While gliding in (or without a nav grid) just steer straight at the goal.
+    if (!m.nav || st.gliding) {
       this.moveToward(inp, st, dest, 1);
       return;
     }
+    // Re-path when the goal moves, the timer expires or the path runs out — but
+    // never more than twice a second, so unreachable goals can't trigger an A*
+    // search every tick.
     const goalMoved = !this.goal || distXZ(this.goal, dest) > 4;
-    if (goalMoved || this.repathT <= 0 || this.pathI >= this.path.length) {
+    const finished = this.pathI >= this.path.length && distXZ(dest, st) > 2;
+    const sincePath = 3.5 - this.repathT;
+    if ((goalMoved || finished) ? sincePath > 0.5 : this.repathT <= 0) {
       this.goal = { ...dest };
       this.repathT = 2.5 + this.rng.next();
-      this.path = m.nav.path(st, dest) ?? [];
+      const path = m.nav.path(st, dest);
+      this.path = path ?? [];
       this.pathI = 0;
+      if (!path) this.repathT = 1.5; // unreachable for now: head straight there, retry later
     }
     let wp = this.path[this.pathI];
-    while (wp && distXZ(wp, st) < 1.2) {
+    while (wp && distXZ(wp, st) < (wp.door ? 0.45 : 1.2)) {
       this.pathI++;
       wp = this.path[this.pathI];
     }

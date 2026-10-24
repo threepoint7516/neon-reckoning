@@ -267,6 +267,18 @@ export class Effects {
       );
   }
 
+  /** Colourful confetti burst (kills, crates, jump pads). */
+  confetti(p: V3, n: number): void {
+    const cols = [0xff595e, 0xffca3a, 0x8ac926, 0x1982c4, 0x6a4c93, 0xff70a6, 0x4cc9f0];
+    const k = Math.ceil(n * Math.max(0.5, this.particleScale));
+    for (let i = 0; i < k; i++) {
+      tmpC.setHex(cols[i % cols.length]!).multiplyScalar(1.6);
+      const a = Math.random() * Math.PI * 2;
+      const s = 2 + Math.random() * 4;
+      this.sparks.emit(p, { x: Math.cos(a) * s, y: 3 + Math.random() * 5, z: Math.sin(a) * s }, tmpC, 0.11, 1.0 + Math.random() * 0.6, 7);
+    }
+  }
+
   /** Expanding ground ring (recon pulse, EMP). */
   pulse(p: V3, radius: number, color: number, life = 1): void {
     const rg = new THREE.RingGeometry(0.97, 1, 64);

@@ -101,3 +101,39 @@ describe("movement & collision", () => {
     expect(run()).toEqual(run());
   });
 });
+
+describe("play features", () => {
+  it("double jump gives one extra jump in the air", () => {
+    const env = testEnv(testMap());
+    const { hooks, fx } = recordingHooks();
+    const p = spawn();
+    for (let i = 0; i < 10; i++) stepPlayer(p, inp(), env, hooks, SIM_DT);
+    stepPlayer(p, inp({ b: Btn.JUMP }), env, hooks, SIM_DT);
+    for (let i = 0; i < 15; i++) stepPlayer(p, inp(), env, hooks, SIM_DT);
+    const vyBefore = p.vy;
+    stepPlayer(p, inp({ b: Btn.JUMP }), env, hooks, SIM_DT);
+    expect(fx).toContain("djump");
+    expect(p.vy).toBeGreaterThan(vyBefore + 2);
+    // No third jump until landing.
+    for (let i = 0; i < 5; i++) stepPlayer(p, inp(), env, hooks, SIM_DT);
+    const c = fx.filter((f) => f === "djump").length;
+    stepPlayer(p, inp({ b: Btn.JUMP }), env, hooks, SIM_DT);
+    expect(fx.filter((f) => f === "djump").length).toBe(c);
+  });
+
+  it("jump pads launch players and cancel fall damage", () => {
+    const map = testMap([box(6, 0, -4, 14, 10, 4)]);
+    map.jumpPads.push({ minX: -0.8, maxX: 0.8, minY: -0.2, maxY: 0.45, minZ: -0.8, maxZ: 0.8, vx: 3, vy: 22, vz: 0 });
+    const env = testEnv(map);
+    const { hooks, fx } = recordingHooks();
+    const p = spawn(0, 0, 0.05);
+    let peak = 0;
+    for (let i = 0; i < 240; i++) {
+      stepPlayer(p, inp(), env, hooks, SIM_DT);
+      peak = Math.max(peak, p.y);
+    }
+    expect(fx).toContain("pad");
+    expect(peak).toBeGreaterThan(9);
+    expect(fx).not.toContain("fall");
+  });
+});

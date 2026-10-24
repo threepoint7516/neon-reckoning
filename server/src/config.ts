@@ -19,8 +19,10 @@ export const config = {
     .filter(Boolean),
   maxRooms: int(process.env.MAX_ROOMS, 40),
   maxSessions: int(process.env.MAX_SESSIONS, 400),
-  /** Seconds a queued party waits before AI fill kicks in (if the party allows bots). */
-  aiFillWait: int(process.env.AI_FILL_WAIT, 20),
+  /** Seconds a queued party waits for more humans before AI fill kicks in (if the party allows bots). */
+  aiFillWait: int(process.env.AI_FILL_WAIT, 8),
+  /** Same, when no other player is online and free to join: start almost at once. */
+  aiFillWaitAlone: int(process.env.AI_FILL_WAIT_ALONE, 2),
   logLevel: process.env.LOG_LEVEL ?? "info",
 };
 

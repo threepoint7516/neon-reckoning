@@ -4,6 +4,8 @@ import { makeMatchConfig } from "../src/sim/config";
 import { getFrontierMap } from "../src/map/frontier";
 import { Btn, SIM_DT } from "../src/constants";
 import type { PlayerInput } from "../src/types";
+import { NavGrid } from "../src/ai/nav";
+import { PAYLOAD_CHECKPOINT_BONUS, buildPayloadTrack, cartBlocked, trackPoint } from "../src/sim/payload";
 
 const map = getFrontierMap();
 
@@ -105,5 +107,105 @@ describe("match simulation", () => {
     const json = JSON.stringify(s);
     expect(JSON.parse(json).me.id).toBe(1);
     expect(json.length).toBeLessThan(20000);
+  });
+});
+
+describe("payload mode", () => {
+  it("derives a deterministic track in every district that never clips geometry", () => {
+    for (const d of map.districts) {
+      const m = new Match(makeMatchConfig({ mode: "payload", arena: d.id, teamSize: 2, offline: true, seed: 1 }), map);
+      const tr = m.track!;
+      expect(tr.length, d.id).toBeGreaterThan(80);
+      expect(tr.checkpoints.length).toBe(2);
+      const again = buildPayloadTrack(new NavGrid(m.world, map, m.bounds), m.world, d);
+      expect(again.pts).toEqual(tr.pts);
+      for (let s = 0; s <= tr.length; s += 0.25) {
+        const p = trackPoint(tr, s);
+        expect(cartBlocked(m.world, p.x, p.y, p.z), `${d.id} @${s}`).toBe(false);
+        expect(p.x > m.bounds.minX && p.x < m.bounds.maxX && p.z > m.bounds.minZ && p.z < m.bounds.maxZ).toBe(true);
+      }
+    }
+  });
+
+  it("advances only with uncontested escorts, extends time at checkpoints and rolls back to the last one", () => {
+    const m = new Match(makeMatchConfig({ mode: "payload", arena: "neon_city", teamSize: 1, offline: false, seed: 2 }), map);
+    const a = m.addPlayer({ id: 1, name: "Attacker", squad: 1, team: 0 });
+    const d = m.addPlayer({ id: 2, name: "Defender", squad: 2, team: 1 });
+    while (m.phase !== "live") m.step();
+    const park = (p: typeof a, x: number, z: number) => Object.assign(p.st, { x, y: m.payloadPos()!.y, z, vx: 0, vy: 0, vz: 0 });
+    const away = trackPoint(m.track!, m.track!.length);
+    park(d, away.x, away.z);
+    // Escorted: advances.
+    let at = m.payloadPos()!;
+    park(a, at.x + 1, at.z);
+    runTicks(m, 60);
+    expect(m.payloadState().d).toBeGreaterThan(1.5);
+    expect(m.payloadState().state).toBe(1);
+    // Contested: holds still.
+    at = m.payloadPos()!;
+    park(d, at.x - 1, at.z);
+    const held = m.payloadState().d;
+    runTicks(m, 60);
+    expect(m.payloadState().d).toBe(held);
+    expect(m.payloadState().state).toBe(2);
+    // Reach the first checkpoint: the clock gains time.
+    park(d, away.x, away.z);
+    const before = m.timeLeft();
+    for (let i = 0; i < 30 * 60 && m.payloadState().reached === 0; i++) {
+      const p = m.payloadPos()!;
+      park(a, p.x + 0.5, p.z);
+      runTicks(m, 1);
+    }
+    expect(m.payloadState().reached).toBe(1);
+    expect(m.timeLeft()).toBeGreaterThan(before + PAYLOAD_CHECKPOINT_BONUS - 60);
+    // Push a little further, then abandon it: rolls back, but not past the checkpoint.
+    for (let i = 0; i < 90; i++) {
+      const p = m.payloadPos()!;
+      park(a, p.x + 0.5, p.z);
+      runTicks(m, 1);
+    }
+    park(a, away.x + 2, away.z);
+    runTicks(m, 30 * 30);
+    expect(m.payloadState().state).not.toBe(1);
+    expect(m.payloadState().d).toBeCloseTo(m.track!.checkpoints[0]!, 5);
+    const snap = m.snapshotFor(1, false);
+    expect(snap.m.pl!.r).toBe(1);
+    expect(snap.m.pl!.p).toBeGreaterThan(0.3);
+  });
+
+  it("bot attackers escort the payload to the end and win", () => {
+    const cfg = makeMatchConfig({ mode: "payload", arena: "eclipse_harbor", teamSize: 3, difficulty: "veteran", offline: true, seed: 13 });
+    const m = new Match(cfg, map);
+    for (let i = 0; i < 3; i++) m.addBot(0, 0);
+    runTicks(m, 30 * 240);
+    expect(m.phase).toBe("ended");
+    expect(m.results!.winnerTeam).toBe(0);
+    expect(m.results!.reason).toBe("Payload delivered");
+    expect(m.results!.teamScores[0]).toBe(100);
+    expect(m.results!.rows.some((r) => (r.medals.checkpoint ?? 0) > 0)).toBe(true);
+  });
+
+  it("bot defenders hold the payload until time runs out and win", () => {
+    const cfg = makeMatchConfig({ mode: "payload", arena: "rusthaven", teamSize: 3, difficulty: "veteran", offline: true, seed: 17, timeLimit: 45 });
+    const m = new Match(cfg, map);
+    for (let i = 0; i < 3; i++) m.addBot(1, 1);
+    runTicks(m, 30 * 60);
+    expect(m.phase).toBe("ended");
+    expect(m.results!.winnerTeam).toBe(1);
+    expect(m.results!.reason).toBe("Defenders held the line");
+    expect(m.results!.teamScores[0]).toBe(0);
+  });
+
+  it("a full bot-filled 4v4 payload match reaches an end condition", () => {
+    for (const seed of [5, 6]) {
+      const cfg = makeMatchConfig({ mode: "payload", arena: "sector_zero", teamSize: 4, difficulty: "standard", offline: true, seed });
+      const m = new Match(cfg, map);
+      for (let i = 0; i < 8; i++) m.addBot(i % 2, i % 2);
+      runTicks(m, 30 * 480);
+      expect(m.phase).toBe("ended");
+      expect(["Payload delivered", "Defenders held the line"]).toContain(m.results!.reason);
+      expect(m.results!.teamScores[0]).toBeGreaterThan(0);
+      expect(m.results!.rows.reduce((n, r) => n + r.kills, 0)).toBeGreaterThan(0);
+    }
   });
 });
