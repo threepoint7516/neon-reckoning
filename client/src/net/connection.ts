@@ -14,6 +14,15 @@ export interface Connection {
   close(): void;
 }
 
+/**
+ * Online play is only offered when the build knows a game server. Without
+ * VITE_GAME_SERVER_URL (and outside `npm run dev`) the game is offline-only:
+ * no Play/lobby, invites or server status anywhere in the UI.
+ */
+export function onlineEnabled(): boolean {
+  return serverUrl() !== null;
+}
+
 export function serverUrl(): string | null {
   const env = import.meta.env.VITE_GAME_SERVER_URL?.trim();
   if (env) return env;

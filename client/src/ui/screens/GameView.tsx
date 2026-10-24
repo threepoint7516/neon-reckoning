@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
+import { onlineEnabled } from "../../net/connection";
 import { portal } from "../../platform/portal";
 import { MODE_INFO, districtMeta } from "@neon/shared";
 import type { DistrictId } from "@neon/shared";
@@ -124,7 +125,7 @@ export function GameView() {
       {!game && !error && (
         <div className="overlay" style={{ background: "linear-gradient(180deg, #0b1a45, #2a4f8a)", flexDirection: "column", textAlign: "center" }}>
           <div className="tagline" style={{ marginTop: 0 }}>
-            {MODE_INFO[cfg.mode].name} {match.offline ? "· Practice (offline)" : "· Online"}
+            {MODE_INFO[cfg.mode].name} {match.offline ? (onlineEnabled() ? "· Practice (offline)" : "· vs AI") : "· Online"}
           </div>
           <h1 style={{ fontSize: 60, margin: "10px 0", fontWeight: 900, color: "#ffd23f", WebkitTextStroke: "3px #1f2a44", textShadow: "0 6px 0 #1f2a44" }}>
             {meta.name.toUpperCase()}

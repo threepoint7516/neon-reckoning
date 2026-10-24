@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef } from "react";
+import { onlineEnabled } from "../../net/connection";
 import type { Game } from "../../game/Game";
 import { MEDAL_NAMES, STREAK_REWARDS } from "../../game/hud";
 import type { HudData } from "../../game/hud";
@@ -63,7 +64,7 @@ export function Hud({ game }: { game: Game }) {
         {s.showFps && (
           <div className="netinfo" style={{ marginTop: 6, width: 200, textAlign: "center" }}>
             <span className="fps">{h.fps} FPS</span>
-            {h.online ? ` · ${ping ?? "—"} ms` : " · OFFLINE PRACTICE"}
+            {h.online ? ` · ${ping ?? "—"} ms` : onlineEnabled() ? " · OFFLINE PRACTICE" : " · VS AI"}
           </div>
         )}
       </div>

@@ -7,7 +7,7 @@ import { settingsStore, useSettings } from "../../state/settings";
 import { challenges, sessionStats } from "../../state/session";
 import { audio } from "../../audio/audio";
 import { online } from "../../net/online";
-import { serverUrl } from "../../net/connection";
+import { onlineEnabled, serverUrl } from "../../net/connection";
 import { getTextures } from "../../game/render/textures";
 import { lastPractice, quickPlay, startPractice } from "./Practice";
 import { LevelPanel } from "../components/LevelPanel";
@@ -77,7 +77,7 @@ export function BootScreen() {
     audio.uiClick();
     if (settingsStore.get().musicVol > 0) audio.playMusic("menu");
     const invite = store.get().pendingInvite;
-    if (invite) go("play");
+    if (invite && onlineEnabled()) go("play");
     else go("menu");
   };
   useEffect(() => {
@@ -180,6 +180,7 @@ const touchOnly = () => typeof matchMedia === "function" && matchMedia("(pointer
 export function MainMenu() {
   const s = useSettings();
   const last = lastPractice();
+  const online = onlineEnabled();
   const btn = (label: string, sub: string, onClick: () => void, primary = false) => (
     <button
       className={`btn ${primary ? "primary big" : ""}`}
@@ -200,8 +201,8 @@ export function MainMenu() {
           <Logo />
           <div className="tagline">Neon Frontier is waiting</div>
           <nav className="menu-nav">
-            {btn("Play", "Online · Solo / Duo / Trio / Squad", () => go("play"), true)}
-            {btn("Quick Play", last ? `Again: ${MODE_INFO[last.mode].name} vs AI` : "6v6 vs AI, right now", () => quickPlay())}
+            {online && btn("Play", "Online · Solo / Duo / Trio / Squad", () => go("play"), true)}
+            {btn(online ? "Quick Play" : "Play", last ? `Again: ${MODE_INFO[last.mode].name} vs AI` : "6v6 vs AI, right now", () => quickPlay(), !online)}
             {btn("Practice", "Offline vs AI · any mode", () => go("practice"))}
             {btn("Training Range", s.tutorialSeen ? "Controls refresher" : "Start here!", () => {
               settingsStore.set({ tutorialSeen: true });
@@ -247,7 +248,7 @@ export function MainMenu() {
               </div>
             ))}
             <div className="small muted" style={{ marginTop: 8 }}>
-              Generated locally from today's date. Progress counts in Practice and online, and resets when you close the tab.
+              Generated locally from today's date. Progress counts in every match, and resets when you close the tab.
             </div>
           </div>
           <div className="panel">
@@ -259,7 +260,7 @@ export function MainMenu() {
               <Stat label="K/D" v={sessionStats.deaths ? (sessionStats.kills / sessionStats.deaths).toFixed(2) : sessionStats.kills} />
             </div>
           </div>
-          <ServerBadge />
+          {online && <ServerBadge />}
         </div>
       </div>
       <div className="footer-note" style={{ textAlign: "center" }}>
@@ -426,13 +427,22 @@ export function PrivacyScreen() {
         <div className="panel">
           <h3>What exists, and for how long</h3>
           <ul className="small" style={{ lineHeight: 1.7 }}>
-            <li>
-              <b>Your callsign</b> lives in this tab's memory only and is sent to the game server when you play online so other players can see it.
-            </li>
-            <li>
-              <b>Parties & matches</b>: the server keeps names, team assignments, positions and scores in RAM while a party or match exists, then discards them when the
-              room closes (at most a few minutes after a match ends).
-            </li>
+            {onlineEnabled() ? (
+              <>
+                <li>
+                  <b>Your callsign</b> lives in this tab's memory only and is sent to the game server when you play online so other players can see it.
+                </li>
+                <li>
+                  <b>Parties & matches</b>: the server keeps names, team assignments, positions and scores in RAM while a party or match exists, then discards them when
+                  the room closes (at most a few minutes after a match ends).
+                </li>
+              </>
+            ) : (
+              <li>
+                <b>Your callsign and every match</b> live in this tab only. This version of the game is offline: it runs entirely in your browser and never talks to a
+                game server.
+              </li>
+            )}
             <li>
               <b>Session challenges & stats</b> are kept in this tab's memory and vanish when you close it.
             </li>
@@ -465,11 +475,18 @@ export function PrivacyScreen() {
         )}
         <div className="panel">
           <h3>What we can't promise</h3>
-          <p className="small" style={{ lineHeight: 1.7 }}>
-            Like every website, the hosting providers (the static site host and the game server host) may keep standard operational logs such as IP addresses and
-            request times. That is outside the game's control. The game server itself only logs operational events (startup, rooms opening/closing, rejected website addresses, errors) and never
-            logs names, IP addresses or message contents. Practice and Training never contact any server at all.
-          </p>
+          {onlineEnabled() ? (
+            <p className="small" style={{ lineHeight: 1.7 }}>
+              Like every website, the hosting providers (the static site host and the game server host) may keep standard operational logs such as IP addresses and
+              request times. That is outside the game's control. The game server itself only logs operational events (startup, rooms opening/closing, rejected website
+              addresses, errors) and never logs names, IP addresses or message contents. Practice and Training never contact any server at all.
+            </p>
+          ) : (
+            <p className="small" style={{ lineHeight: 1.7 }}>
+              Like every website, the host that serves the game's files may keep standard operational logs such as IP addresses and request times. That is outside the
+              game's control. Once loaded, the game doesn't contact any server.
+            </p>
+          )}
         </div>
       </div>
     </div>

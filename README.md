@@ -158,7 +158,12 @@ Browsers on an HTTPS site require **`wss://`**, so the server must be reachable 
    It's a **public** build-time variable that ends up in the JavaScript bundle. Never put secrets in `VITE_*` variables.
 3. Deploy. Then add the Netlify URL to the server's `ALLOWED_ORIGINS`.
 
-Without `VITE_GAME_SERVER_URL` the build is still fully usable: Practice and Training work, and Play explains that no multiplayer server is configured. Production builds never fall back to `localhost`.
+**Offline-only (free, no server):** leave `VITE_GAME_SERVER_URL` unset. The build is then a complete offline game:
+- Everything runs in the player's browser: Quick Play, Practice in every mode, Training, levels and challenges.
+- All online parts are hidden: the online Play lobby, the server status panel and invite links.
+- The Privacy page says the game never talks to a server.
+
+To bring online play back later, deploy the server and set the variable again; no code changes needed. Production builds never fall back to `localhost`.
 
 ### 3. Earning from the game (optional)
 
