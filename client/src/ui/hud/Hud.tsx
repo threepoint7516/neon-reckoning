@@ -123,7 +123,7 @@ export function Hud({ game }: { game: Game }) {
         )}
         {h.cacheActive && (
           <span className="chip warn" style={{ background: "rgba(20,30,60,.55)", color: "#fff" }}>
-            ◆ Data Cache active
+            {game.cfg.mode === "br" ? "◆ Supply drop — power weapon inside" : "◆ Data Cache active"}
           </span>
         )}
         {h.storm > 0 && (

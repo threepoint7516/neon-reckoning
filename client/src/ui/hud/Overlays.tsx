@@ -178,14 +178,21 @@ export function DeathPanel({ game }: { game: Game }) {
   const br = game.cfg.mode === "br";
   return (
     <div className="death" onMouseDown={(e) => e.stopPropagation()}>
-      <h1>{h.downed ? "DOWNED" : "ELIMINATED"}</h1>
+      <h1>{h.downed ? "DOWNED" : d.redeploy ? "SECOND CHANCE" : "ELIMINATED"}</h1>
       {d.killer && (
         <div style={{ fontSize: 16, letterSpacing: "0.1em", marginTop: 6 }}>
           by <b style={{ color: "#ff2b4e" }}>{d.killer}</b> · {d.weapon}
           {d.head ? " · headshot" : ""}
         </div>
       )}
-      {br ? (
+      {br && d.redeploy ? (
+        <div style={{ marginTop: 14 }}>
+          <div className="muted">Knocked out early — you get one free redeploy.</div>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 18, margin: "10px 0 0" }} className="glow-cyan">
+            {remain > 0 ? `Gliding back in ${remain.toFixed(1)}s` : "Redeploying…"}
+          </div>
+        </div>
+      ) : br ? (
         <div style={{ marginTop: 14 }}>
           {d.spectating ? <div className="chip">Spectating {d.spectating}</div> : <div className="muted">Your squad has been eliminated.</div>}
           {d.placement > 0 && <div style={{ fontSize: 30, fontWeight: 900, marginTop: 8 }}>#{d.placement}</div>}

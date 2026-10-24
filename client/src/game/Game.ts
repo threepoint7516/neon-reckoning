@@ -708,9 +708,10 @@ export class Game {
             killer: e.kr === this.myId ? "Yourself" : e.kr < 0 ? causeName(e.w) : this.nameOf(e.kr),
             weapon,
             head: e.h,
-            respawnAt: this.cfg.mode === "br" ? -1 : now + this.cfg.respawnDelay,
+            respawnAt: e.rd ? now + e.rd : this.cfg.mode === "br" ? -1 : now + this.cfg.respawnDelay,
             spectating: null,
             placement: 0,
+            redeploy: !!e.rd,
           };
         } else if (e.kr === this.myId) {
           h.killBanner = { name: this.nameOf(e.v), t: now, head: e.h };
@@ -1165,7 +1166,7 @@ export class Game {
       h.overdrive = me.overdrive;
       h.spawnProt = me.spawnProt;
       h.prompt = this.computePrompt(me);
-      if (!me.alive && h.death && this.cfg.mode === "br") h.death.placement = this.scores.find((r) => r.i === this.myId)?.pl ?? 0;
+      if (!me.alive && h.death && this.cfg.mode === "br" && !h.death.redeploy) h.death.placement = this.scores.find((r) => r.i === this.myId)?.pl ?? 0;
       if (!me.alive && !h.death) h.death = { killer: "", weapon: "", head: false, respawnAt: this.cfg.mode === "br" ? -1 : t + this.cfg.respawnDelay, spectating: null, placement: 0 };
     }
 
@@ -1272,7 +1273,7 @@ export class Game {
     if (this.district && this.cfg.mode === "dom")
       this.district.points.forEach((p, i) => out.push({ x: p.x, z: p.z, kind: "point", label: "ABC"[i], color: this.hud.points[i]?.color ?? "#fff" }));
     const m = this.match;
-    if (m?.dc) out.push({ x: m.dc[0], z: m.dc[2], kind: "cache", color: "#ffe14a", label: "CACHE" });
+    if (m?.dc) out.push({ x: m.dc[0], z: m.dc[2], kind: "cache", color: "#ffe14a", label: this.cfg.mode === "br" ? "DROP" : "CACHE" });
     if (m?.pl) out.push({ x: m.pl.x, z: m.pl.z, kind: "payload", color: hexStr(this.colorForTeam(0)), label: "PAYLOAD" });
     for (const p of this.lastPickups) if (p.k === "power") out.push({ x: p.x, z: p.z, kind: "power", color: "#ff2bd6", label: p.w ? WEAPONS[p.w as keyof typeof WEAPONS]?.name : "POWER" });
     return out;

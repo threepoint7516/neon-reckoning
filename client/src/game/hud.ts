@@ -68,7 +68,11 @@ export interface HudData {
   msgs: { id: number; text: string; t: number }[];
   prompt: string | null;
   scanned: number;
-  death: { killer: string; weapon: string; respawnAt: number; head: boolean; spectating: string | null; placement: number } | null;
+  death: {
+    killer: string; weapon: string; respawnAt: number; head: boolean; spectating: string | null; placement: number;
+    /** BR second chance: gliding back in at respawnAt. */
+    redeploy?: boolean;
+  } | null;
   phase: "starting" | "live" | "ended";
   timeLeft: number;
   scoreLine: { label: string; value: number; color: string; mine: boolean }[];

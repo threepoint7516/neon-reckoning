@@ -79,6 +79,12 @@ export interface MatchPlayer {
   gunTier: number;
   /** Kills by each opponent on this player (for Nemesis). */
   killedBy: Map<number, number>;
+  /** BR second chance: time to glide back in (-1 = none pending); used at most once. */
+  redeployAt: number;
+  redeployed: boolean;
+  /** Bot loot focus: the pickup it's heading for, and pickups it gave up on (id → until). */
+  lootFocus: { id: number; since: number } | null;
+  lootIgnore: Map<number, number>;
 }
 
 interface Projectile {
@@ -187,12 +193,23 @@ interface Zone {
 }
 
 const ZONE_PHASES = [
-  { wait: 50, shrink: 35, r: 140, dps: 2 },
-  { wait: 40, shrink: 30, r: 85, dps: 4 },
-  { wait: 35, shrink: 25, r: 48, dps: 7 },
-  { wait: 30, shrink: 22, r: 22, dps: 10 },
+  { wait: 75, shrink: 35, r: 140, dps: 2 },
+  { wait: 55, shrink: 30, r: 85, dps: 4 },
+  { wait: 45, shrink: 25, r: 48, dps: 7 },
+  { wait: 35, shrink: 22, r: 22, dps: 10 },
   { wait: 25, shrink: 20, r: 0, dps: 16 },
 ];
+
+/** BR pacing: bots fight each other at reduced lethality so the field lasts until players arrive. */
+export const BR_BOT_VS_BOT_DAMAGE = 0.4;
+/** BR second chance: anyone eliminated this early (seconds after landing) glides back in once. */
+export const BR_REDEPLOY_WINDOW = 90;
+const BR_REDEPLOY_DELAY = 5;
+/** BR calm period: bots only start fights with other bots up close (they always engage players). */
+export const BR_CALM = 150;
+/** BR supply drops: first one after this many seconds, then every interval. */
+const BR_DROP_FIRST = 70;
+const BR_DROP_EVERY = 55;
 
 type TargetSnap = { m: MatchPlayer; x: number; y: number; z: number; cr: boolean; dn: boolean };
 type Ev = GameEvent;
@@ -371,7 +388,7 @@ export class Match {
       respawnAt: this.time, connected: true, damageLog: new Map(), lastHurt: -99, revealed: new Map(),
       downedT: 0, reviveTarget: -1, reviveT: 0, lastKillT: -99, multi: 0, lastKilledBy: -1, eliminated: false, placement: 0,
       bot: isBot ? new BotBrain(this.cfg.seed + o.id * 31, o.difficulty ?? this.cfg.botDifficulty, this.cfg.mode === "training") : null,
-      lastVt: 0, gunTier: 0, killedBy: new Map(),
+      lastVt: 0, gunTier: 0, killedBy: new Map(), redeployAt: -1, redeployed: false, lootFocus: null, lootIgnore: new Map(),
     };
     this.players.set(o.id, mp);
     if (isBot) this.ensureNav();
@@ -539,11 +556,30 @@ export class Match {
     }
     const n = [...this.players.values()].filter((p) => p.squad === mp.squad).length;
     const pos = { x: anchor.x + (n % 2) * 3, y: 70, z: anchor.z + Math.floor(n / 2) * 3 };
+    this.insertBR(mp, pos);
+  }
+
+  /** Drops a player in from the sky with the BR kit (pistol with three spare magazines). */
+  private insertBR(mp: MatchPlayer, pos: Vec3): void {
     resetForSpawn(mp.st, mp.loadout, { ...BR_KIT }, pos, this.rng.range(-Math.PI, Math.PI));
+    const pistol = mp.st.slots[1];
+    if (pistol) pistol.reserve = WEAPONS[pistol.id].mag * 3;
     mp.st.gliding = true;
     mp.st.team = mp.team;
     mp.respawnAt = -1;
+    mp.redeployAt = -1;
     mp.bot?.reset(mp.st.yaw);
+  }
+
+  /** Second chance: glide back in over a random spot inside the safe zone. */
+  private redeployBR(mp: MatchPlayer): void {
+    const z = this.zone!;
+    const inside = this.map.loot.filter((p) => Math.hypot(p.x - z.x, p.z - z.z) < z.r * 0.7);
+    const p = inside.length ? inside[this.rng.int(0, inside.length - 1)]! : { x: z.x, y: 0, z: z.z };
+    this.insertBR(mp, { x: p.x + this.rng.range(-8, 8), y: 60, z: p.z + this.rng.range(-8, 8) });
+    mp.stats.streak = 0;
+    this.emit({ k: "msg", to: mp.id, t: "Second chance! Glide in and find a weapon" });
+    this.emit({ k: "spawn", p: mp.id });
   }
   private brAnchors = new Map<string, { x: number; z: number }>();
 
@@ -658,6 +694,7 @@ export class Match {
       // Respawn timers.
       if (!st.alive) {
         if (this.respawns && mp.respawnAt >= 0 && this.time >= mp.respawnAt && this.phase === "live" && (mp.connected || mp.isBot)) this.spawn(mp);
+        else if (this.isBR && mp.redeployAt >= 0 && this.time >= mp.redeployAt && this.phase === "live") this.redeployBR(mp);
         continue;
       }
       // Regeneration in arena modes.
@@ -960,6 +997,7 @@ export class Match {
     if (st.spawnProt > 0 && attacker && attacker !== v) return 0;
     if (attacker && attacker !== v && !this.isFFA && attacker.team === v.team && !this.cfg.friendlyFire) return 0;
     if (attacker === v) amount *= 0.5;
+    if (this.isBR && attacker?.isBot && v.isBot) amount *= BR_BOT_VS_BOT_DAMAGE;
     let toArmor = 0;
     if (!o.ignoreArmor && !st.downed) {
       toArmor = Math.min(st.armor, amount);
@@ -1045,9 +1083,13 @@ export class Match {
       v.gunTier--;
       this.emit({ k: "msg", to: v.id, t: "Demoted — back one weapon" });
     }
-    this.emit({ k: "kill", kr: killer && killer !== v ? killer.id : -1, v: v.id, w: cause, h: head, as: assists });
+    const secondChance = this.isBR && this.phase === "live" && !v.redeployed && this.time - this.liveStart < BR_REDEPLOY_WINDOW && cause !== "leave";
+    this.emit({ k: "kill", kr: killer && killer !== v ? killer.id : -1, v: v.id, w: cause, h: head, as: assists, ...(secondChance ? { rd: BR_REDEPLOY_DELAY } : {}) });
     this.dropOnDeath(v);
-    if (this.isBR) {
+    if (secondChance) {
+      v.redeployed = true;
+      v.redeployAt = this.time + BR_REDEPLOY_DELAY;
+    } else if (this.isBR) {
       v.eliminated = true;
       this.checkTeamElimination(v.team);
     }
@@ -1136,16 +1178,48 @@ export class Match {
   private checkTeamElimination(team: number): void {
     if (!this.isBR || this.phase !== "live") return;
     const members = [...this.players.values()].filter((p) => p.team === team);
-    const standing = members.filter((p) => p.st.alive && !p.st.downed);
+    const standing = members.filter((p) => (p.st.alive && !p.st.downed) || p.redeployAt >= 0);
     if (standing.length > 0) return;
     // Whole squad down or dead: finish downed players.
     for (const p of members) if (p.st.alive && p.st.downed) this.kill(p, this.recentAttacker(p), "bleedout", false);
     if (members.every((p) => p.placement > 0)) return;
-    const aliveTeams = new Set([...this.players.values()].filter((p) => p.st.alive).map((p) => p.team));
+    const aliveTeams = this.brTeamsInPlay();
     const placement = aliveTeams.size + 1;
     for (const p of members) if (!p.placement) p.placement = placement;
     this.teamsEliminated++;
-    this.emit({ k: "ann", t: `Squad eliminated — ${aliveTeams.size} remaining`, c: "info" });
+    const n = aliveTeams.size;
+    const solo = this.cfg.teamSize === 1;
+    if (n === 2) this.emit({ k: "ann", t: solo ? "FINAL TWO — one fight left" : "FINAL TWO SQUADS", c: "bounty" });
+    else if (n === 3 || n === 5 || n === 10) this.emit({ k: "ann", t: `${n} ${solo ? "players" : "squads"} left`, c: "bounty" });
+    else if (n > 1) this.emit({ k: "ann", t: `${solo ? "Player" : "Squad"} eliminated — ${n} remaining`, c: "info" });
+  }
+
+  /** Whether walking over / interacting with a pickup would give this player anything (mirrors autoPickups). */
+  canUse(mp: MatchPlayer, pk: Pickup): boolean {
+    const st = mp.st;
+    switch (pk.kind) {
+      case "health":
+        return st.health < MAX_HEALTH;
+      case "armor":
+        return st.armor < this.env.maxArmor;
+      case "ammo":
+        return st.slots.some((s) => s && WEAPONS[s.id].ammoPickupMags > 0 && s.reserve < WEAPONS[s.id].reserve * 2);
+      case "grenade":
+        return GRENADE_IDS.some((g) => st.nades[g] < GRENADES[g].max);
+      case "injector":
+        return st.injectors < INJECTOR.max;
+      case "plate":
+        return st.plates < PLATE.max;
+      case "weapon":
+        return !st.slots[WEAPONS[pk.weapon!].slot === "secondary" ? 1 : 0];
+      case "power":
+        return !st.slots[2];
+    }
+  }
+
+  /** BR teams still in the running (alive, or waiting to redeploy). */
+  private brTeamsInPlay(): Set<number> {
+    return new Set([...this.players.values()].filter((p) => p.st.alive || p.redeployAt >= 0).map((p) => p.team));
   }
 
   // -------------------------------------------------------------------------
@@ -1213,6 +1287,7 @@ export class Match {
     } else {
       if (existing) this.dropWeapon(existing.id, existing.mag, existing.reserve, st);
       const slot = makeSlot(id, !this.isBR);
+      if (this.isBR && def.slot !== "power") slot.reserve = def.mag * 2;
       if (pk.mag !== undefined) slot.mag = pk.mag;
       if (pk.reserve !== undefined) slot.reserve = pk.reserve;
       st.slots[slotIdx] = slot;
@@ -1344,7 +1419,38 @@ export class Match {
     }
   }
 
+  /** BR supply drops: a crate lands inside the safe zone; whoever reaches it first gets the goods. */
+  private updateSupplyDrops(t: number): void {
+    if (this.nextDropAt === 0) this.nextDropAt = this.liveStart + BR_DROP_FIRST;
+    if (this.cache && t > this.cache.until) {
+      this.cache = null;
+      this.emit({ k: "ann", t: "The supply drop burned out", c: "info" });
+    }
+    if (this.cache || t < this.nextDropAt) return;
+    this.nextDropAt = t + BR_DROP_EVERY;
+    const z = this.zone!;
+    const spots = this.map.loot.filter((p) => Math.hypot(p.x - z.tx, p.z - z.tz) < Math.max(12, z.tr * 0.8) && Math.abs(p.y) < 0.6);
+    if (!spots.length) return;
+    const s = spots[this.rng.int(0, spots.length - 1)]!;
+    this.cache = { x: s.x, y: s.y, z: s.z, until: t + 60 };
+    this.emit({ k: "ann", t: "SUPPLY DROP landed — power weapon and armor inside", c: "cache" });
+  }
+  private nextDropAt = 0;
+
   private claimCache(mp: MatchPlayer): void {
+    if (this.isBR && this.cache) {
+      // Supply drop: power weapon, armor and plates spill out for the winner.
+      const c = this.cache;
+      this.addPickup("power", { x: c.x + 0.8, y: c.y + 0.05, z: c.z }, this.rng.pick(POWER_IDS), 0).expireAt = this.time + 90;
+      this.addPickup("armor", { x: c.x - 0.8, y: c.y + 0.05, z: c.z }, undefined, 0).expireAt = this.time + 90;
+      this.addPickup("plate", { x: c.x, y: c.y + 0.05, z: c.z + 0.8 }, undefined, 0).expireAt = this.time + 90;
+      this.addPickup("ammo", { x: c.x, y: c.y + 0.05, z: c.z - 0.8 }, undefined, 0).expireAt = this.time + 90;
+      this.cache = null;
+      mp.st.overdrive = 15;
+      this.medal(mp, "data_heist");
+      this.emit({ k: "ann", t: `${mp.name} cracked the SUPPLY DROP`, c: "cache" });
+      return;
+    }
     this.cache = null;
     mp.st.overdrive = 20;
     mp.st.armor = this.env.maxArmor;
@@ -1703,6 +1809,7 @@ export class Match {
       }
     }
     // Neon storm event.
+    if (this.isBR && this.zone) this.updateSupplyDrops(t);
     if (this.has("neonstorm")) {
       if (!this.stormWarned && t >= this.nextStormAt - 5) {
         this.stormWarned = true;
@@ -1864,6 +1971,33 @@ export class Match {
     }
   }
 
+  /**
+   * Whether bot `me` should start a fight with `o` at this distance. In the BR
+   * calm period bots leave other bots alone unless close or already shooting
+   * at each other, so the field is still busy when players arrive.
+   */
+  botWillFight(me: MatchPlayer, o: MatchPlayer, dist: number): boolean {
+    if (!this.isBR || !o.isBot || this.time - this.liveStart > BR_CALM) return true;
+    if (dist < 20) return true;
+    const hit = me.damageLog.get(o.id);
+    return !!hit && this.time - hit.t < 4;
+  }
+
+  /**
+   * BR: where a bot must go right now to stay out of the storm, or null when
+   * it's safe. Bots fight on the move toward this point.
+   */
+  zonePull(me: MatchPlayer): Vec3 | null {
+    const z = this.zone;
+    if (!this.isBR || !z) return null;
+    const st = me.st;
+    const out = Math.hypot(st.x - z.x, st.z - z.z) > z.r * 0.9;
+    // Start moving to the next circle during the countdown before it closes.
+    const closing = z.shrinking || z.nextAt - this.time < 20;
+    const outNext = closing && Math.hypot(st.x - z.tx, st.z - z.tz) > z.tr * 0.85;
+    return out || outNext ? { x: z.tx, y: 0, z: z.tz } : null;
+  }
+
   /** Where an idle bot should head (objectives, zone, loot). */
   botObjective(me: MatchPlayer): Vec3 | null {
     const st = me.st;
@@ -1890,21 +2024,24 @@ export class Match {
       }
       return best ? { x: best.x + ((me.id % 5) - 2), y: best.y, z: best.z + ((me.id % 3) - 1) } : null;
     }
-    if (this.cache && distXZ(this.cache, st) < 45) return this.cache;
+    const armed = st.slots.some((s) => s && s.mag + s.reserve > 0);
+    if (this.cache && armed && distXZ(this.cache, st) < (this.isBR ? 90 : 45)) return this.cache;
     if (this.isBR && this.zone) {
       const z = this.zone;
-      const r = z.shrinking ? z.tr : z.r;
-      const cx = z.shrinking ? z.tx : z.x;
-      const cz = z.shrinking ? z.tz : z.z;
-      if (Math.hypot(st.x - cx, st.z - cz) > r * 0.8) return { x: cx, y: 0, z: cz };
-      // Loot: nearest weapon if unarmed, else nearby consumables.
+      // Outside the safe zone (or the next one once it starts closing): get in.
+      const pull = this.zonePull(me);
+      if (pull) return pull;
+      // Loot: ammo or any gun when dry, a primary when only holding the pistol, else nearby consumables.
+      const lowAmmo = st.slots.reduce((a, s) => a + (s ? s.mag + s.reserve : 0), 0) < 20;
       const needWeapon = !st.slots[0];
       let best: Pickup | null = null;
-      let bd = needWeapon ? 80 : 25;
+      let bd = !armed ? 150 : needWeapon ? 80 : lowAmmo ? 50 : 25;
       for (const pk of this.pickups) {
-        if (!pk.active) continue;
-        if (needWeapon && pk.kind !== "weapon") continue;
-        if (!needWeapon && pk.kind === "weapon") continue;
+        if (!pk.active || !this.canUse(me, pk) || (me.lootIgnore.get(pk.id) ?? 0) > this.time) continue;
+        if (!armed && pk.kind !== "ammo" && pk.kind !== "weapon" && pk.kind !== "power") continue;
+        if (armed && needWeapon && pk.kind !== "weapon") continue;
+        if (armed && !needWeapon && lowAmmo && pk.kind !== "ammo") continue;
+        if (armed && !needWeapon && !lowAmmo && (pk.kind === "weapon" || pk.kind === "power")) continue;
         // Bots navigate at street level; skip loot on rooftops and upper floors.
         if (Math.abs(pk.y - st.y) > 2.5) continue;
         const d = dist3(pk, st);
@@ -1913,7 +2050,40 @@ export class Match {
           best = pk;
         }
       }
-      return best;
+      if (best) {
+        // Give up on loot we can't reach in reasonable time (blocked, on a ledge…).
+        if (me.lootFocus?.id !== best.id) me.lootFocus = { id: best.id, since: this.time };
+        else if (this.time - me.lootFocus.since > 12) {
+          me.lootIgnore.set(best.id, this.time + 30);
+          me.lootFocus = null;
+        }
+        return best;
+      }
+      me.lootFocus = null;
+      // Hunt: after the landing scramble, armed bots go after real players from
+      // far away, but only pick fights with other bots close by (keeps the field
+      // alive for the players). Targets snap to a 10 m grid so paths stay stable.
+      if (armed && this.time - this.liveStart > 45) {
+        let near: MatchPlayer | null = null;
+        let nd = Infinity;
+        for (const o of this.players.values()) {
+          if (o === me || !o.st.alive || o.team === me.team || o.st.gliding || Math.abs(o.st.y - st.y) > 2.5) continue;
+          const d = distXZ(o.st, st);
+          if (d > (o.isBot ? 60 : 160)) continue;
+          const score = d - (o.isBot ? 0 : 40);
+          if (score < nd) {
+            nd = score;
+            near = o;
+          }
+        }
+        if (near && (me.id + Math.floor(this.time / 12)) % 3 !== 0) {
+          return { x: Math.round(near.st.x / 10) * 10, y: near.st.y, z: Math.round(near.st.z / 10) * 10 };
+        }
+      }
+      // Rotate: drift to a personal spot inside the next safe zone.
+      const a = (me.id * 2.399 + z.phase) % (Math.PI * 2);
+      const rr = z.tr * (0.25 + ((me.id * 37) % 50) / 100);
+      return { x: z.tx + Math.cos(a) * rr, y: 0, z: z.tz + Math.sin(a) * rr };
     }
     // Hunt: drift toward the nearest enemy region.
     let near: MatchPlayer | null = null;
@@ -1981,7 +2151,7 @@ export class Match {
         break;
       }
       case "br": {
-        const alive = new Set([...this.players.values()].filter((p) => p.st.alive).map((p) => p.team));
+        const alive = this.brTeamsInPlay();
         const total = new Set([...this.players.values()].map((p) => p.team));
         if (total.size >= 2 && alive.size <= 1) {
           winner = alive.size === 1 ? [...alive][0]! : -1;

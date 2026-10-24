@@ -47,7 +47,13 @@ export class BotBrain {
   private path: NavPoint[] = [];
   private pathI = 0;
   private goal: Vec3 | null = null;
-  private repathT = 0;
+  /** Stepping stone toward a far destination (keeps each A* search small). */
+  private stone: Vec3 | null = null;
+  private stoneFor: Vec3 | null = null;
+  /** Seconds since the last A* search, the interval before the next routine one, and a back-off after a failure. */
+  private sincePath = 99;
+  private repathEvery = 3;
+  private failT = 0;
   private thinkT = 0;
   private stuckT = 0;
   private lastPos: Vec3 = { x: 0, y: 0, z: 0 };
@@ -94,7 +100,8 @@ export class BotBrain {
     this.nadeT -= dt;
     this.errT -= dt;
     this.strafeT -= dt;
-    this.repathT -= dt;
+    this.sincePath += dt;
+    this.failT -= dt;
     this.crouchT -= dt;
     this.jumpT -= dt;
 
@@ -133,7 +140,9 @@ export class BotBrain {
       inp.b |= Btn.RELOAD;
     }
 
-    if (visible && tgt) {
+    // With no ammo anywhere, fighting is pointless: go resupply (see Match.botObjective).
+    const armed = st.slots.some((s) => s && s.mag + s.reserve > 0);
+    if (visible && tgt && armed) {
       this.state = st.health < 35 && sk.tactics ? "cover" : "engage";
       this.engage(m, me, tgt, inp, dt);
     } else {
@@ -204,6 +213,7 @@ export class BotBrain {
       const dist = Math.hypot(dx, dz);
       const revealed = m.isRevealedTo(p, me.team);
       if (dist > sk.viewRange && !revealed) continue;
+      if (p.id !== this.target && !m.botWillFight(me, p, dist)) continue;
       const facing = (dx * fx + dz * fz) / (dist || 1);
       const inFov = facing > fovCos || dist < 5 || revealed || (p.id === this.target && this.seenT > 0);
       if (!inFov) continue;
@@ -211,7 +221,8 @@ export class BotBrain {
       const chest = { x: p.st.x, y: p.st.y + (p.st.crouched ? 0.7 : 1.1), z: p.st.z };
       const los = (m.world.lineOfSight(eye, head) || m.world.lineOfSight(eye, chest)) && !m.smokeBlocks(eye, chest);
       if (!los) continue;
-      const score = dist - (p.id === this.target ? 15 : 0);
+      // Stick with the current target; prefer real players over other bots.
+      const score = dist - (p.id === this.target ? 15 : 0) - (p.isBot ? 0 : 12);
       if (score < bestScore) {
         bestScore = score;
         best = p.id;
@@ -289,7 +300,8 @@ export class BotBrain {
     toT.x /= len;
     toT.z /= len;
     // Payload: fight on the move back to the cart (or the defensive line).
-    const obj = m.isPayload ? m.botObjective(me) : null;
+    // Battle royale: fight on the move into the safe zone.
+    const obj = m.isPayload ? m.botObjective(me) : m.zonePull(me);
     if (obj && distXZ(obj, st) > (me.team === 0 ? 4 : 8)) {
       this.navigate(m, me, inp, obj);
       inp.b &= ~Btn.SPRINT;
@@ -353,8 +365,9 @@ export class BotBrain {
     let dest: Vec3 | null = null;
     const obj = m.botObjective(me);
     // Payload: never wander off chasing sounds while far from the cart.
-    const tethered = !!obj && m.isPayload && distXZ(obj, st) > 12;
-    if (this.lastKnown && !this.passive && !tethered) dest = this.lastKnown;
+    const tethered = !!obj && (m.isPayload ? distXZ(obj, st) > 12 : !!m.zonePull(me));
+    const armed = st.slots.some((s) => s && s.mag + s.reserve > 0);
+    if (this.lastKnown && !this.passive && !tethered && armed) dest = this.lastKnown;
     if (!dest) dest = obj;
     if (!dest) {
       if (!this.goal || distXZ(this.goal, st) < 3) {
@@ -367,6 +380,8 @@ export class BotBrain {
     if (dest) {
       if (this.lastKnown && distXZ(dest, st) < 3) this.lastKnown = null;
       this.navigate(m, me, inp, dest, true);
+      // Weapons on the ground need the interact key (consumables are picked up by walking over).
+      if ("kind" in dest && (dest.kind === "weapon" || dest.kind === "power") && distXZ(dest, st) < 2.2 && this.rng.next() < 0.5) inp.b |= Btn.USE;
     }
     if (inp.mx === 0 && inp.mz === 0) {
       // Idle scan.
@@ -383,19 +398,32 @@ export class BotBrain {
       this.moveToward(inp, st, dest, 1);
       return;
     }
-    // Re-path when the goal moves, the timer expires or the path runs out — but
-    // never more than twice a second, so unreachable goals can't trigger an A*
-    // search every tick.
+    const finalDest = dest;
+    // Long trips (battle royale rotations, far loot): path to a stepping stone
+    // ~40 m along the way instead of across the whole map in one search.
+    const far = distXZ(dest, st);
+    if (far > 55) {
+      if (!this.stone || !this.stoneFor || distXZ(this.stone, st) < 8 || distXZ(this.stoneFor, dest) > 10) {
+        const k = 40 / far;
+        const c = m.nav.nearest(st.x + (dest.x - st.x) * k, st.z + (dest.z - st.z) * k, st.y);
+        this.stone = c >= 0 ? m.nav.center(c) : null;
+        this.stoneFor = { ...dest };
+      }
+      if (this.stone) dest = this.stone;
+    } else this.stone = null;
+    // Re-path when the goal moves, the path runs out or it's simply due — but
+    // never more than twice a second, and after a failed search (unreachable
+    // goal) back off for a while, so A* can't run every tick.
     const goalMoved = !this.goal || distXZ(this.goal, dest) > 4;
     const finished = this.pathI >= this.path.length && distXZ(dest, st) > 2;
-    const sincePath = 3.5 - this.repathT;
-    if ((goalMoved || finished) ? sincePath > 0.5 : this.repathT <= 0) {
+    if (this.failT <= 0 && ((goalMoved || finished) ? this.sincePath > 0.5 : this.sincePath > this.repathEvery)) {
       this.goal = { ...dest };
-      this.repathT = 2.5 + this.rng.next();
+      this.sincePath = 0;
+      this.repathEvery = 2.5 + this.rng.next();
       const path = m.nav.path(st, dest);
       this.path = path ?? [];
       this.pathI = 0;
-      if (!path) this.repathT = 1.5; // unreachable for now: head straight there, retry later
+      if (!path) this.failT = 1.5 + this.rng.next(); // unreachable for now: head straight there, retry later
     }
     let wp = this.path[this.pathI];
     while (wp && distXZ(wp, st) < (wp.door ? 0.45 : 1.2)) {
@@ -409,7 +437,7 @@ export class BotBrain {
       this.yaw += clamp(angleDiff(this.yaw, want), -this.skill.turnRate * 0.02, this.skill.turnRate * 0.02);
     }
     // Sprint on long open stretches.
-    if (distXZ(dest, st) > 12 && inp.mz > 0.7) inp.b |= Btn.SPRINT;
+    if (distXZ(finalDest, st) > 12 && inp.mz > 0.7) inp.b |= Btn.SPRINT;
     if (target.y - st.y > 0.6 && distXZ(target, st) < 2) inp.b |= Btn.JUMP;
   }
 
